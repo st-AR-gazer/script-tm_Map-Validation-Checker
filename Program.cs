@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -29,7 +30,7 @@ internal sealed class Program
                 : new Dictionary<string, ManualEntry>(StringComparer.Ordinal);
 
             var replayIndex = !string.IsNullOrWhiteSpace(opts.ReplaysPath)
-                ? BuildReplayIndex(opts.ReplaysPath!, opts.Recursive)
+                ? BuildReplayIndex(opts.ReplaysPath!, opts.Recursive, opts.Progress, opts.ProgressIntervalSeconds)
                 : new Dictionary<string, List<ReplayEntry>>(StringComparer.Ordinal);
 
             object outputObj;
@@ -40,10 +41,28 @@ internal sealed class Program
             }
             else
             {
+                var mapFiles = EnumerateFiles(opts.MapPath, opts.Recursive).ToList();
+                var totalMaps = mapFiles.Count;
+                var progress = opts.Progress ? new ProgressReporter(TimeSpan.FromSeconds(opts.ProgressIntervalSeconds)) : null;
+                int processed = 0;
+                int errorCount = 0;
+
                 var reports = new List<Report>();
-                foreach (var file in EnumerateFiles(opts.MapPath, opts.Recursive))
+                foreach (var file in mapFiles)
                 {
-                    reports.Add(ProcessMapFile(file, opts, manual, replayIndex));
+                    var report = ProcessMapFile(file, opts, manual, replayIndex);
+                    reports.Add(report);
+
+                    processed++;
+                    if (!string.IsNullOrWhiteSpace(report.Error))
+                        errorCount++;
+
+                    if (progress is not null && progress.TryGetStats(processed, out var mapStats))
+                    {
+                        var eta = ProgressReporter.GetEta(totalMaps - processed, mapStats.AvgRate);
+                        Console.Error.WriteLine(
+                            $"Map scan: {processed}/{totalMaps} files, errors={errorCount}, rate={mapStats.AvgRate:F1}/s (last {mapStats.IntervalRate:F1}/s), eta={eta}, elapsed={mapStats.Elapsed}");
+                    }
                 }
                 outputObj = reports;
             }
@@ -116,6 +135,8 @@ internal sealed class Program
         }
 
         report.Uid = map.MapUid;
+        if (opts.IncludeMapName)
+            report.MapName = map.MapName;
 
         var authorMs = TimeToMs(map.AuthorTime);
 
@@ -193,37 +214,67 @@ internal sealed class Program
 
         var metadataFinish = wpTimes[wpTimes.Count - 1];
 
-        var cpCountMatches = map.NbCheckpoints == wpTimes.Count || (map.NbCheckpoints + 1) == wpTimes.Count;
-        var lastIsAt = metadataFinish == authorMs.Value;
+        var cpCountLooksWeird = !(map.NbCheckpoints == wpTimes.Count || (map.NbCheckpoints + 1) == wpTimes.Count);
+        var finishMatchesAuthor = metadataFinish == authorMs.Value;
 
-        if (cpCountMatches && lastIsAt)
+        if (finishMatchesAuthor)
         {
             report.Validated = "Yes";
             report.Type = "normal";
+
+            if (cpCountLooksWeird)
+            {
+                report.Note = $"Finish time matches, but checkpoint count differs (mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+            }
+
             return report;
         }
 
         report.Validated = "Maybe";
         report.Type = "plugin";
-        report.Note = $"authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinish}, mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}";
+        report.Note = $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinish}, mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
         return report;
+
     }
 
     // ----------------------------
     // Replay index
     // ----------------------------
 
-    private static Dictionary<string, List<ReplayEntry>> BuildReplayIndex(string path, bool recursive)
+    private static Dictionary<string, List<ReplayEntry>> BuildReplayIndex(
+        string path,
+        bool recursive,
+        bool progressEnabled,
+        double progressIntervalSeconds)
     {
         var dict = new Dictionary<string, List<ReplayEntry>>(StringComparer.Ordinal);
 
-        foreach (var file in EnumerateFiles(path, recursive))
+        var files = EnumerateFiles(path, recursive).ToList();
+        var total = files.Count;
+        var progress = progressEnabled ? new ProgressReporter(TimeSpan.FromSeconds(progressIntervalSeconds)) : null;
+        int scanned = 0;
+        int gbxCount = 0;
+        int indexed = 0;
+
+        foreach (var file in files)
         {
+            scanned++;
+
             if (!LooksLikeGbx(file))
+            {
+                if (progress is not null && progress.TryGetStats(scanned, out var replayStatsSkip))
+                {
+                    var eta = ProgressReporter.GetEta(total - scanned, replayStatsSkip.AvgRate);
+                    Console.Error.WriteLine(
+                        $"Replay scan: {scanned}/{total} files, gbx={gbxCount}, indexed={indexed}, rate={replayStatsSkip.AvgRate:F1}/s (last {replayStatsSkip.IntervalRate:F1}/s), eta={eta}, elapsed={replayStatsSkip.Elapsed}");
+                }
                 continue;
+            }
 
             try
             {
+                gbxCount++;
+
                 var replay = Gbx.ParseNode<CGameCtnReplayRecord>(file);
 
                 var uid = replay.MapInfo?.Id;
@@ -244,7 +295,15 @@ internal sealed class Program
                 }
 
                 if (times.Count == 0)
+                {
+                    if (progress is not null && progress.TryGetStats(scanned, out var replayStatsNoTimes))
+                    {
+                        var eta = ProgressReporter.GetEta(total - scanned, replayStatsNoTimes.AvgRate);
+                        Console.Error.WriteLine(
+                            $"Replay scan: {scanned}/{total} files, gbx={gbxCount}, indexed={indexed}, rate={replayStatsNoTimes.AvgRate:F1}/s (last {replayStatsNoTimes.IntervalRate:F1}/s), eta={eta}, elapsed={replayStatsNoTimes.Elapsed}");
+                    }
                     continue;
+                }
 
                 if (!dict.TryGetValue(uid!, out var list))
                 {
@@ -253,8 +312,16 @@ internal sealed class Program
                 }
 
                 list.Add(new ReplayEntry(file, times));
+                indexed++;
             }
             catch { }
+
+            if (progress is not null && progress.TryGetStats(scanned, out var replayStatsOk))
+            {
+                var eta = ProgressReporter.GetEta(total - scanned, replayStatsOk.AvgRate);
+                Console.Error.WriteLine(
+                    $"Replay scan: {scanned}/{total} files, gbx={gbxCount}, indexed={indexed}, rate={replayStatsOk.AvgRate:F1}/s (last {replayStatsOk.IntervalRate:F1}/s), eta={eta}, elapsed={replayStatsOk.Elapsed}");
+            }
         }
 
         return dict;
@@ -624,6 +691,9 @@ internal sealed class Program
         bool recursive = false;
         bool pretty = false;
         bool includePath = false;
+        bool includeMapName = true;
+        bool progress = false;
+        double progressIntervalSeconds = 5;
 
         string? output = null;
 
@@ -671,6 +741,20 @@ internal sealed class Program
 
                 case "--include-path":
                     includePath = true;
+                    break;
+
+                case "--no-map-name":
+                    includeMapName = false;
+                    break;
+
+                case "--progress":
+                    progress = true;
+                    break;
+
+                case "--progress-interval":
+                    if (!double.TryParse(Next(), out var interval) || interval <= 0)
+                        throw new ArgException("--progress-interval must be a positive number (seconds)");
+                    progressIntervalSeconds = interval;
                     break;
 
                 case "--output":
@@ -733,6 +817,9 @@ internal sealed class Program
             recursive,
             pretty,
             includePath,
+            includeMapName,
+            progress,
+            progressIntervalSeconds,
             output,
             gpsEnabled,
             strictGps,
@@ -751,6 +838,9 @@ Flags:
   --recursive                Recurse into subfolders (batch + replay scanning)
   --pretty                   Pretty-print JSON
   --include-path             Include ""path"" and ""replayPath"" (if matched)
+  --no-map-name              Omit ""mapName"" from JSON output
+  --progress                 Print periodic scan progress to stderr
+  --progress-interval <sec>  Progress update interval in seconds (default: 5)
   --output <file>            Write JSON output to a file (also prints to stdout)
   --manual <file>            Manual overrides JSON (object or array of objects):
                              { ""valid"": true/false, ""uid"": ""..."", ""note"": ""..."" }
@@ -779,6 +869,9 @@ Notes:
         bool Recursive,
         bool Pretty,
         bool IncludePath,
+        bool IncludeMapName,
+        bool Progress,
+        double ProgressIntervalSeconds,
         string? OutputPath,
         bool GpsEnabled,
         bool StrictGps,
@@ -796,6 +889,7 @@ Notes:
         public string? Type { get; set; }
         public string? Note { get; set; }
         public string? Path { get; set; }
+        public string? MapName { get; set; }
         public string? ReplayPath { get; set; }
         public string? Error { get; set; }
     }
@@ -804,4 +898,74 @@ Notes:
     {
         public ArgException(string message) : base(message) { }
     }
+
+    private sealed class ProgressReporter
+    {
+        private readonly Stopwatch _sw = Stopwatch.StartNew();
+        private readonly TimeSpan _interval;
+        private TimeSpan _last = TimeSpan.Zero;
+        private double _lastReportSeconds;
+        private int _lastReportCount;
+
+        public ProgressReporter(TimeSpan interval)
+        {
+            _interval = interval;
+        }
+
+        public bool TryGetStats(int currentCount, out ProgressStats stats)
+        {
+            var elapsed = _sw.Elapsed;
+            if (elapsed - _last < _interval)
+            {
+                stats = default;
+                return false;
+            }
+
+            _last = elapsed;
+
+            var elapsedSeconds = elapsed.TotalSeconds;
+            var avgRate = GetRate(currentCount, elapsedSeconds);
+            var intervalSeconds = elapsedSeconds - _lastReportSeconds;
+            var intervalCount = currentCount - _lastReportCount;
+            var intervalRate = GetRate(intervalCount, intervalSeconds);
+
+            _lastReportSeconds = elapsedSeconds;
+            _lastReportCount = currentCount;
+
+            stats = new ProgressStats(FormatElapsed(elapsed), elapsedSeconds, avgRate, intervalRate);
+            return true;
+        }
+
+        private static string FormatElapsed(TimeSpan t)
+        {
+            var minutes = (int)t.TotalMinutes;
+            return $"{minutes}m{t.Seconds:D2}s";
+        }
+
+        public static double GetRate(int processed, double elapsedSeconds)
+        {
+            if (processed <= 0 || elapsedSeconds <= 0)
+                return 0;
+            return processed / elapsedSeconds;
+        }
+
+        public static string GetEta(int remaining, double rate)
+        {
+            if (remaining <= 0)
+                return "0m00s";
+            if (rate <= 0)
+                return "unknown";
+
+            var seconds = (int)Math.Round(remaining / rate);
+            if (seconds < 0) seconds = 0;
+            return FormatElapsed(TimeSpan.FromSeconds(seconds));
+        }
+    }
+
+    private readonly record struct ProgressStats(
+        string Elapsed,
+        double ElapsedSeconds,
+        double AvgRate,
+        double IntervalRate
+    );
 }

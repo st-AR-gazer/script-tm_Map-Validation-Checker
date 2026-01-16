@@ -9,6 +9,7 @@ It supports:
 * Optional **replay evidence** matching (`--replays`)
 * Optional **manual override JSON** (`--manual`)
 * JSON output to stdout (and optionally file)
+* Optional progress updates to stderr during long replay/map scans (counts, rate, ETA)
 
 ---
 
@@ -102,6 +103,7 @@ Outputs a **JSON array**, one element per scanned file:
 | `type`       | string                          | `normal`, `plugin`, `validationghost`, `gps`, `replay`, `manual` |
 | `note`       | string?                         | Optional note (manual / debug info)                              |
 | `path`       | string?                         | Included if `--include-path`                                     |
+| `mapName`    | string?                         | Map name (omit with `--no-map-name`)                             |
 | `replayPath` | string?                         | Included if `--include-path` **and** replay matched              |
 | `error`      | string?                         | Error message for that item                                      |
 
@@ -139,6 +141,15 @@ Optional:
 
 * `--include-path`
   Include the `path` field for single too (and `replayPath` when matched).
+
+* `--no-map-name`
+  Omit the `mapName` field from JSON output.
+
+* `--progress`
+  Print periodic scan progress to stderr.
+
+* `--progress-interval <sec>`
+  Progress update interval in seconds (default: 5).
 
 * `--output <file>`
   Write JSON output to file **in addition to stdout**.
