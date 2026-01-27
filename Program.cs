@@ -12,6 +12,7 @@ using GBX.NET;
 using GBX.NET.Engines.Game;
 using GBX.NET.Engines.Script;
 using GBX.NET.LZO;
+using GBX.NET.ZLib;
 
 internal sealed class Program
 {
@@ -25,6 +26,7 @@ internal sealed class Program
             var opts = ParseArgs(args);
 
             Gbx.LZO = new Lzo();
+            Gbx.ZLib = new ZLib();
 
             var manual = !string.IsNullOrWhiteSpace(opts.ManualPath)
                 ? LoadManualOverrides(opts.ManualPath!)
