@@ -2,10 +2,12 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 
 using GBX.NET;
@@ -18,6 +20,8 @@ internal sealed class Program
 {
     private const string WaypointTimesKey = "Race_AuthorRaceWaypointTimes";
     private const int DefaultGpsThresholdMs = 100;
+    private const string ValidationRemovalSignatureText = "RaceValidationReplay Remover made by ar";
+    private static readonly string ValidationRemovalSignatureHex = BuildSignatureHexString(ValidationRemovalSignatureText);
 
     private static int Main(string[] args)
     {
@@ -175,7 +179,18 @@ internal sealed class Program
             }
         }
 
-        // 3) Replay mapping (external evidence)
+        // 3) Validation removal tag (script metadata)
+        if (HasValidationRemovalTag(map.ScriptMetadata, out var tagKey))
+        {
+            report.Validated = "Yes";
+            report.Type = "validationtag";
+            report.Note = tagKey is null
+                ? "Validation ghost removed (tag found in script metadata)."
+                : $"Validation ghost removed (tag found in script metadata: {tagKey}).";
+            return report;
+        }
+
+        // 4) Replay mapping (external evidence)
         if (!string.IsNullOrWhiteSpace(report.Uid) && authorMs.HasValue &&
             replayIndex.TryGetValue(report.Uid!, out var replayEntries))
         {
@@ -191,7 +206,7 @@ internal sealed class Program
             }
         }
 
-        // 4) GPS check (optional)
+        // 5) GPS check (optional)
         if (opts.GpsEnabled && authorMs.HasValue)
         {
             if (HasGpsGhostAtAuthorTime(map, authorMs.Value, opts.MaxDepth, opts.GpsThresholdMs, out var gpsMatch))
@@ -218,7 +233,7 @@ internal sealed class Program
             }
         }
 
-        // 5) Script metadata check => normal vs plugin
+        // 6) Script metadata check => normal vs plugin
         var wpTimes = ExtractWaypointTimes(map.ScriptMetadata);
         if (!authorMs.HasValue || wpTimes is null || wpTimes.Count == 0)
         {
@@ -582,6 +597,160 @@ internal sealed class Program
         public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
 
         public int GetHashCode(object obj) => RuntimeHelpers.GetHashCode(obj);
+    }
+
+    // ----------------------------
+    // Validation removal tag detection
+    // ----------------------------
+
+    private static bool HasValidationRemovalTag(CScriptTraitsMetadata? metadata, out string? tagKey)
+    {
+        tagKey = null;
+        if (metadata?.Traits is null || metadata.Traits.Count == 0)
+            return false;
+
+        foreach (var kvp in metadata.Traits)
+        {
+            if (kvp.Value is null)
+                continue;
+
+            if (TraitContainsValidationRemovalTag(kvp.Value))
+            {
+                tagKey = kvp.Key;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TraitContainsValidationRemovalTag(CScriptTraitsMetadata.ScriptTrait trait)
+    {
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var stack = new Stack<object>();
+        stack.Push(trait);
+
+        while (stack.Count > 0)
+        {
+            var obj = stack.Pop();
+            if (obj is null)
+                continue;
+
+            if (obj is string s)
+            {
+                if (MatchesValidationRemovalSignature(s))
+                    return true;
+                continue;
+            }
+
+            if (!visited.Add(obj))
+                continue;
+
+            if (obj is CScriptTraitsMetadata.ScriptTrait st)
+            {
+                object? value = null;
+                try { value = st.GetValue(); } catch { }
+                if (value is not null && !ReferenceEquals(value, obj))
+                    stack.Push(value);
+
+                if (st is CScriptTraitsMetadata.ScriptStructTrait structTrait && structTrait.Value is not null)
+                {
+                    foreach (var child in structTrait.Value.Values)
+                    {
+                        if (child is not null)
+                            stack.Push(child);
+                    }
+                }
+                else if (st is CScriptTraitsMetadata.ScriptArrayTrait arrayTrait && arrayTrait.Value is not null)
+                {
+                    foreach (var child in arrayTrait.Value)
+                    {
+                        if (child is not null)
+                            stack.Push(child);
+                    }
+                }
+            }
+
+            if (obj is IDictionary dict)
+            {
+                foreach (DictionaryEntry entry in dict)
+                {
+                    if (entry.Key is not null)
+                        stack.Push(entry.Key);
+                    if (entry.Value is not null)
+                        stack.Push(entry.Value);
+                }
+                continue;
+            }
+
+            if (obj is IEnumerable enumerable && obj is not string)
+            {
+                int i = 0;
+                foreach (var item in enumerable)
+                {
+                    if (item is not null)
+                        stack.Push(item);
+                    if (++i > 20000)
+                        break;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool MatchesValidationRemovalSignature(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var s = value.Trim();
+
+        if (string.Equals(s, ValidationRemovalSignatureText, StringComparison.Ordinal))
+            return true;
+
+        if (string.Equals(s, ValidationRemovalSignatureHex, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (TryDecodeHexToAscii(s, out var decoded) &&
+            string.Equals(decoded, ValidationRemovalSignatureText, StringComparison.Ordinal))
+            return true;
+
+        return false;
+    }
+
+    private static bool TryDecodeHexToAscii(string hex, out string decoded)
+    {
+        decoded = string.Empty;
+        if (string.IsNullOrWhiteSpace(hex))
+            return false;
+
+        var s = hex.Trim();
+        if (s.Length % 2 != 0)
+            return false;
+
+        var byteCount = s.Length / 2;
+        Span<byte> bytes = byteCount <= 512 ? stackalloc byte[byteCount] : new byte[byteCount];
+
+        for (int i = 0; i < byteCount; i++)
+        {
+            var slice = s.AsSpan(i * 2, 2);
+            if (!byte.TryParse(slice, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b))
+                return false;
+            bytes[i] = b;
+        }
+
+        decoded = Encoding.ASCII.GetString(bytes);
+        return true;
+    }
+
+    private static string BuildSignatureHexString(string text)
+    {
+        var bytes = Encoding.ASCII.GetBytes(text);
+        var sb = new StringBuilder(bytes.Length * 2);
+        foreach (var b in bytes)
+            sb.Append(b.ToString("X2", CultureInfo.InvariantCulture));
+        return sb.ToString();
     }
 
     // ----------------------------

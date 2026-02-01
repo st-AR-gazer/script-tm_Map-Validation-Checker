@@ -35,7 +35,13 @@ If the map has a `RaceValidateGhost`:
 * If `RaceValidateGhost.RaceTime == AuthorTime` → `validated: "Yes"`, `type: "validationghost"`
 * If it exists but **does not match** → `error: "validation ghost time mismatch"`
 
-### 3) Replay ↔ map matching (strong external evidence)
+### 3) Validation removal tag (script metadata)
+
+If a validation-removal tag is found in script metadata (added by the strip-validation tool):
+
+* `validated: "Yes"`, `type: "validationtag"`
+
+### 4) Replay ↔ map matching (strong external evidence)
 
 If replays are provided (`--replays`) and:
 
@@ -49,7 +55,7 @@ Then:
 
 See: [Replay matching](#replay-matching)
 
-### 4) GPS ghost check (optional)
+### 5) GPS ghost check (optional)
 
 If GPS scan is enabled (default):
 
@@ -61,7 +67,7 @@ If GPS scan is enabled (default):
 
 By default, GPS matching allows ±100 ms because GPS times are stored to the nearest tenth of a second. You can disable GPS scanning with `--no-gps` or change the tolerance with `--gps-threshold-ms`.
 
-### 5) Script metadata validation (normal vs plugin suspicion)
+### 6) Script metadata validation (normal vs plugin suspicion)
 
 Reads `Race_AuthorRaceWaypointTimes` from script metadata:
 
@@ -100,7 +106,7 @@ Outputs a **JSON array**, one element per scanned file:
 | ------------ | ------------------------------- | ---------------------------------------------------------------- |
 | `uid`        | string                          | Map UID (when available)                                         |
 | `validated`  | `"Yes" \| "Maybe" \| "Unknown"` | Status label                                                     |
-| `type`       | string                          | `normal`, `plugin`, `validationghost`, `gps`, `replay`, `manual` |
+| `type`       | string                          | `normal`, `plugin`, `validationghost`, `validationtag`, `gps`, `replay`, `manual` |
 | `note`       | string?                         | Optional note (manual / debug info)                              |
 | `path`       | string?                         | Included if `--include-path`                                     |
 | `mapName`    | string?                         | Map name (omit with `--no-map-name`)                             |
