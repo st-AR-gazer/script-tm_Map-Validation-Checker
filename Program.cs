@@ -145,7 +145,7 @@ internal sealed class Program
         if (opts.IncludeMapName)
             report.MapName = map.MapName;
 
-        var authorMs = TimeToMs(map.AuthorTime);
+        var authorMs = TimeToMs(map.AuthorTime ?? map.ChallengeParameters?.AuthorTime);
 
         // 1) Manual override
         if (!string.IsNullOrWhiteSpace(report.Uid) &&
@@ -157,9 +157,18 @@ internal sealed class Program
             return report;
         }
 
+        if (!authorMs.HasValue)
+        {
+            report.Validated = "Unknown";
+            report.Type = "normal";
+            report.Error = "missing AuthorMedal time";
+            report.Note = "Map is missing author time; validation checks skipped.";
+            return report;
+        }
+
         // 2) Validation ghost check
         var valGhost = map.ChallengeParameters?.RaceValidateGhost;
-        if (valGhost is not null && authorMs.HasValue)
+        if (valGhost is not null)
         {
             var valMs = TimeToMs(valGhost.RaceTime);
             if (valMs.HasValue)
@@ -180,13 +189,38 @@ internal sealed class Program
         }
 
         // 3) Validation removal tag (script metadata)
-        if (HasValidationRemovalTag(map.ScriptMetadata, out var tagKey))
+        if (TryGetValidationRemovalTagInfo(map.ScriptMetadata, out var tagInfo))
         {
-            report.Validated = "Yes";
             report.Type = "validationtag";
-            report.Note = tagKey is null
-                ? "Validation ghost removed (tag found in script metadata)."
-                : $"Validation ghost removed (tag found in script metadata: {tagKey}).";
+
+            if (tagInfo.AuthorTimeMs.HasValue)
+            {
+                if (authorMs.HasValue)
+                {
+                    if (authorMs.Value == tagInfo.AuthorTimeMs.Value)
+                    {
+                        report.Validated = "Yes";
+                        report.Note = BuildValidationTagNote(tagInfo, "Validation ghost removed (tag found in script metadata).");
+                        return report;
+                    }
+
+                    report.Validated = "Maybe";
+                    report.Note = BuildValidationTagNote(
+                        tagInfo,
+                        $"Warning: validation tag author time mismatch; authorTimeMs={authorMs.Value}, tagAuthorTimeMs={tagInfo.AuthorTimeMs.Value}.");
+                    return report;
+                }
+
+                report.Validated = "Maybe";
+                report.Error = "missing AuthorMedal time";
+                report.Note = BuildValidationTagNote(
+                    tagInfo,
+                    "Warning: validation tag includes author time, but map author time is missing.");
+                return report;
+            }
+
+            report.Validated = "Yes";
+            report.Note = BuildValidationTagNote(tagInfo, "Validation ghost removed (tag found in script metadata).");
             return report;
         }
 
@@ -603,25 +637,211 @@ internal sealed class Program
     // Validation removal tag detection
     // ----------------------------
 
-    private static bool HasValidationRemovalTag(CScriptTraitsMetadata? metadata, out string? tagKey)
+    private sealed record ValidationRemovalTagInfo(
+        string? Key,
+        string? Note,
+        int? AuthorTimeMs,
+        string? AuthorTimeSource);
+
+    private static bool TryGetValidationRemovalTagInfo(
+        CScriptTraitsMetadata? metadata,
+        out ValidationRemovalTagInfo tagInfo)
     {
-        tagKey = null;
+        tagInfo = null!;
         if (metadata?.Traits is null || metadata.Traits.Count == 0)
             return false;
 
-        foreach (var kvp in metadata.Traits)
+        var traits = metadata.Traits.ToList();
+
+        for (int i = traits.Count - 1; i >= 0; i--)
         {
+            var kvp = traits[i];
+            if (kvp.Value is not CScriptTraitsMetadata.ScriptStructTrait structTrait)
+                continue;
+
+            if (!TryGetStructFieldText(structTrait, "compressed", out var compressed) ||
+                string.IsNullOrWhiteSpace(compressed))
+                continue;
+
+            if (!MatchesValidationRemovalSignature(compressed))
+                continue;
+
+            var note = TryGetStructFieldText(structTrait, "Note", out var noteText) ? noteText : null;
+            int? authorMs = null;
+            string? source = null;
+
+            if (TryGetStructFieldStruct(structTrait, "ChallengeParameters", out var cpStruct) && cpStruct is not null)
+            {
+                if (TryGetStructFieldInt(cpStruct, "AuthorTime", out var cpAuthorMs) && cpAuthorMs >= 0)
+                {
+                    authorMs = cpAuthorMs;
+                    source = "ChallengeParameters.AuthorTime";
+                }
+            }
+
+            if (!authorMs.HasValue &&
+                TryExtractAuthorTimeFromRemovalNote(note, out var noteAuthorMs, out var noteToken))
+            {
+                authorMs = noteAuthorMs;
+                source = $"Note.AuthorTime ({noteToken})";
+            }
+
+            tagInfo = new ValidationRemovalTagInfo(kvp.Key, note, authorMs, source);
+            return true;
+        }
+
+        for (int i = traits.Count - 1; i >= 0; i--)
+        {
+            var kvp = traits[i];
             if (kvp.Value is null)
                 continue;
 
             if (TraitContainsValidationRemovalTag(kvp.Value))
             {
-                tagKey = kvp.Key;
+                tagInfo = new ValidationRemovalTagInfo(kvp.Key, null, null, null);
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static string BuildValidationTagNote(ValidationRemovalTagInfo info, string baseNote)
+    {
+        var keyPart = string.IsNullOrWhiteSpace(info.Key) ? null : $"tagKey={info.Key}";
+        var sourcePart = string.IsNullOrWhiteSpace(info.AuthorTimeSource) ? null : $"tagAuthorTimeSource={info.AuthorTimeSource}";
+        return JoinNonEmpty(baseNote, keyPart, sourcePart);
+    }
+
+    private static bool TryGetStructField(
+        CScriptTraitsMetadata.ScriptStructTrait structTrait,
+        string fieldName,
+        out CScriptTraitsMetadata.ScriptTrait? trait)
+    {
+        trait = null;
+        if (structTrait.Value is null)
+            return false;
+
+        if (!structTrait.Value.TryGetValue(fieldName, out var t) || t is null)
+            return false;
+
+        trait = t;
+        return true;
+    }
+
+    private static bool TryGetStructFieldStruct(
+        CScriptTraitsMetadata.ScriptStructTrait structTrait,
+        string fieldName,
+        out CScriptTraitsMetadata.ScriptStructTrait? childStruct)
+    {
+        childStruct = null;
+        if (!TryGetStructField(structTrait, fieldName, out var trait))
+            return false;
+
+        if (trait is CScriptTraitsMetadata.ScriptStructTrait st)
+        {
+            childStruct = st;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetStructFieldText(
+        CScriptTraitsMetadata.ScriptStructTrait structTrait,
+        string fieldName,
+        out string? value)
+    {
+        value = null;
+        if (!TryGetStructField(structTrait, fieldName, out var trait) || trait is null)
+            return false;
+
+        object? raw = null;
+        try { raw = trait.GetValue(); } catch { }
+
+        if (raw is string s)
+        {
+            value = s;
+            return true;
+        }
+
+        if (raw is not null)
+        {
+            value = raw.ToString();
+            return !string.IsNullOrWhiteSpace(value);
+        }
+
+        return false;
+    }
+
+    private static bool TryGetStructFieldInt(
+        CScriptTraitsMetadata.ScriptStructTrait structTrait,
+        string fieldName,
+        out int value)
+    {
+        value = default;
+        if (!TryGetStructField(structTrait, fieldName, out var trait) || trait is null)
+            return false;
+
+        object? raw = null;
+        try { raw = trait.GetValue(); } catch { }
+
+        if (raw is int i)
+        {
+            value = i;
+            return true;
+        }
+
+        if (raw is long l)
+        {
+            value = unchecked((int)l);
+            return true;
+        }
+
+        if (raw is uint ui)
+        {
+            value = unchecked((int)ui);
+            return true;
+        }
+
+        if (raw is not null && int.TryParse(raw.ToString(), out var p))
+        {
+            value = p;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractAuthorTimeFromRemovalNote(
+        string? note,
+        out int authorTimeMs,
+        out string? token)
+    {
+        authorTimeMs = default;
+        token = null;
+
+        if (string.IsNullOrWhiteSpace(note))
+            return false;
+
+        var idx = note.IndexOf("AuthorTime=", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+            return false;
+
+        idx += "AuthorTime=".Length;
+        var end = note.IndexOf(';', idx);
+        var raw = (end >= 0 ? note.Substring(idx, end - idx) : note.Substring(idx)).Trim();
+
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        token = raw;
+
+        if (!TryParseTmTimeToMs(raw, out var ms))
+            return false;
+
+        authorTimeMs = ms;
+        return true;
     }
 
     private static bool TraitContainsValidationRemovalTag(CScriptTraitsMetadata.ScriptTrait trait)

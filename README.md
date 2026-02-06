@@ -40,6 +40,7 @@ If the map has a `RaceValidateGhost`:
 If a validation-removal tag is found in script metadata (added by the strip-validation tool):
 
 * `validated: "Yes"`, `type: "validationtag"`
+* If the tag includes an AuthorTime (from `ChallengeParameters` or the Note text) and it **does not** match the map’s `AuthorTime` → `error: "validation tag author time mismatch"` (marked `validated: "Unknown"`)
 
 ### 4) Replay ↔ map matching (strong external evidence)
 
