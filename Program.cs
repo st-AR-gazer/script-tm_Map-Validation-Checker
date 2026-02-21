@@ -20,6 +20,7 @@ internal sealed class Program
 {
     private const string WaypointTimesKey = "Race_AuthorRaceWaypointTimes";
     private const int DefaultGpsThresholdMs = 100;
+    private const int GpsCountdownOffsetMs = 3000;
     private const string ValidationRemovalSignatureText = "RaceValidationReplay Remover made by ar";
     private static readonly string ValidationRemovalSignatureHex = BuildSignatureHexString(ValidationRemovalSignatureText);
 
@@ -147,6 +148,9 @@ internal sealed class Program
 
         var authorMs = TimeToMs(map.AuthorTime ?? map.ChallengeParameters?.AuthorTime);
 
+        if (opts.DataDump)
+            report.DataDump = BuildDataDump(map, authorMs, opts.MaxDepth);
+
         // 1) Manual override
         if (!string.IsNullOrWhiteSpace(report.Uid) &&
             manual.TryGetValue(report.Uid!, out var manualEntry))
@@ -192,35 +196,38 @@ internal sealed class Program
         if (TryGetValidationRemovalTagInfo(map.ScriptMetadata, out var tagInfo))
         {
             report.Type = "validationtag";
+            var signatureWarning = tagInfo.HasSignature
+                ? null
+                : "Warning: expected removal-tool signature is missing; metadata looks suspicious.";
 
             if (tagInfo.AuthorTimeMs.HasValue)
             {
-                if (authorMs.HasValue)
+                if (authorMs.Value == tagInfo.AuthorTimeMs.Value)
                 {
-                    if (authorMs.Value == tagInfo.AuthorTimeMs.Value)
-                    {
-                        report.Validated = "Yes";
-                        report.Note = BuildValidationTagNote(tagInfo, "Validation ghost removed (tag found in script metadata).");
-                        return report;
-                    }
-
-                    report.Validated = "Maybe";
+                    report.Validated = "Yes";
                     report.Note = BuildValidationTagNote(
                         tagInfo,
-                        $"Warning: validation tag author time mismatch; authorTimeMs={authorMs.Value}, tagAuthorTimeMs={tagInfo.AuthorTimeMs.Value}.");
+                        JoinNonEmpty(
+                            "Validation ghost removed (tag found in script metadata).",
+                            signatureWarning));
                     return report;
                 }
 
                 report.Validated = "Maybe";
-                report.Error = "missing AuthorMedal time";
                 report.Note = BuildValidationTagNote(
                     tagInfo,
-                    "Warning: validation tag includes author time, but map author time is missing.");
+                    JoinNonEmpty(
+                        $"Warning: validation tag author time mismatch; authorTimeMs={authorMs.Value}, tagAuthorTimeMs={tagInfo.AuthorTimeMs.Value}.",
+                        signatureWarning));
                 return report;
             }
 
-            report.Validated = "Yes";
-            report.Note = BuildValidationTagNote(tagInfo, "Validation ghost removed (tag found in script metadata).");
+            report.Validated = "Maybe";
+            report.Note = BuildValidationTagNote(
+                tagInfo,
+                JoinNonEmpty(
+                    "Validation-removal tag found, but no tag author time was extracted.",
+                    signatureWarning));
             return report;
         }
 
@@ -240,36 +247,45 @@ internal sealed class Program
             }
         }
 
-        // 5) GPS check (optional)
-        if (opts.GpsEnabled && authorMs.HasValue)
+        // 5) Script metadata check => normal vs plugin suspicion
+        var wpTimes = ExtractWaypointTimes(map.ScriptMetadata);
+        if (wpTimes is not null && wpTimes.Count > 0)
+        {
+            var metadataFinish = wpTimes[wpTimes.Count - 1];
+            var cpCountLooksWeird = !(map.NbCheckpoints == wpTimes.Count || (map.NbCheckpoints + 1) == wpTimes.Count);
+            var finishMatchesAuthor = metadataFinish == authorMs.Value;
+
+            if (finishMatchesAuthor)
+            {
+                report.Validated = "Yes";
+                report.Type = "normal";
+
+                if (cpCountLooksWeird)
+                {
+                    report.Note = $"Finish time matches, but checkpoint count differs (mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+                }
+
+                return report;
+            }
+        }
+
+        // 6) GPS check (optional):
+        if (opts.GpsEnabled)
         {
             if (HasGpsGhostAtAuthorTime(map, authorMs.Value, opts.MaxDepth, opts.GpsThresholdMs, out var gpsMatch))
             {
                 report.Type = "gps";
                 report.Validated = opts.StrictGps ? "Yes" : "Maybe";
-
-                var matchNote = gpsMatch is null
-                    ? null
-                    : $"gpsTimeMs={gpsMatch.GpsTimeMs}, deltaMs={gpsMatch.DeltaMs}, source={gpsMatch.Source}.";
-
-                report.Note = opts.StrictGps
-                    ? JoinNonEmpty(
-                        $"GPS author time match found within \u00b1{opts.GpsThresholdMs} ms.",
-                        "GPS times are stored to the nearest tenth of a second, so small discrepancies are expected.",
-                        "Strict mode => validated Yes.",
-                        matchNote)
-                    : JoinNonEmpty(
-                        $"GPS author time match found within \u00b1{opts.GpsThresholdMs} ms.",
-                        "GPS times are stored to the nearest tenth of a second, so small discrepancies are expected.",
-                        "Still potentially invalid.",
-                        matchNote);
+                if (gpsMatch is not null)
+                {
+                    report.GpsValidation = BuildGpsValidationDetails(authorMs.Value, opts.GpsThresholdMs, gpsMatch);
+                    report.Note = BuildGpsValidationNote(opts.GpsThresholdMs, opts.StrictGps, gpsMatch);
+                }
                 return report;
             }
         }
 
-        // 6) Script metadata check => normal vs plugin
-        var wpTimes = ExtractWaypointTimes(map.ScriptMetadata);
-        if (!authorMs.HasValue || wpTimes is null || wpTimes.Count == 0)
+        if (wpTimes is null || wpTimes.Count == 0)
         {
             report.Validated = "Unknown";
             report.Type = "normal";
@@ -277,27 +293,10 @@ internal sealed class Program
             return report;
         }
 
-        var metadataFinish = wpTimes[wpTimes.Count - 1];
-
-        var cpCountLooksWeird = !(map.NbCheckpoints == wpTimes.Count || (map.NbCheckpoints + 1) == wpTimes.Count);
-        var finishMatchesAuthor = metadataFinish == authorMs.Value;
-
-        if (finishMatchesAuthor)
-        {
-            report.Validated = "Yes";
-            report.Type = "normal";
-
-            if (cpCountLooksWeird)
-            {
-                report.Note = $"Finish time matches, but checkpoint count differs (mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
-            }
-
-            return report;
-        }
-
+        var metadataFinishFinal = wpTimes[wpTimes.Count - 1];
         report.Validated = "Maybe";
         report.Type = "plugin";
-        report.Note = $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinish}, mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+        report.Note = $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinishFinal}, mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
         return report;
 
     }
@@ -467,38 +466,293 @@ internal sealed class Program
         if (map.ClipGroupInGame is null)
             return false;
 
-        foreach (var candidate in EnumerateGpsRecordDataCandidates(map))
+        foreach (var candidate in EnumerateMediaBlockEntityChunkCandidates(map))
         {
-            var delta = Math.Abs(candidate.TimeMs - authorMs);
-            if (delta <= gpsThresholdMs)
+            if (candidate.TimeMs == authorMs)
             {
-                matchInfo = new GpsMatchInfo(candidate.TimeMs, delta, candidate.Source);
+                matchInfo = new GpsMatchInfo(
+                    candidate.TimeMs,
+                    0,
+                    candidate.Source,
+                    GpsMatchMethod.U05Exact,
+                    GpsMatchKind.ExactMatch);
                 return true;
             }
         }
 
-        foreach (var block in TraverseForType<CGameCtnMediaBlockGhost>(map.ClipGroupInGame, maxDepth))
+        var recordDataCandidates = EnumerateGpsRecordDataCandidates(map).ToList();
+        if (TryFindBestThresholdMatch(
+                recordDataCandidates,
+                authorMs,
+                gpsThresholdMs,
+                static source => source.EndsWith(".U03", StringComparison.Ordinal),
+                out matchInfo))
         {
-            var ghost = block.GhostModel;
-            if (ghost is null)
-                continue;
+            return true;
+        }
 
-            var t = TimeToMs(ghost.RaceTime);
-            if (!t.HasValue)
-                continue;
-
-            var delta = Math.Abs(t.Value - authorMs);
-            if (delta <= gpsThresholdMs)
-            {
-                matchInfo = new GpsMatchInfo(t.Value, delta, "CGameCtnMediaBlockGhost.GhostModel.RaceTime");
-                return true;
-            }
+        if (TryFindBestThresholdMatch(
+                recordDataCandidates,
+                authorMs,
+                gpsThresholdMs,
+                static source => source.EndsWith(".U03MinusCountdown", StringComparison.Ordinal),
+                out matchInfo))
+        {
+            return true;
         }
 
         return false;
     }
 
-    private static IEnumerable<GpsCandidate> EnumerateGpsRecordDataCandidates(CGameCtnChallenge map)
+    private static bool TryFindBestThresholdMatch(
+        IEnumerable<GpsCandidate> candidates,
+        int authorMs,
+        int thresholdMs,
+        Func<string, bool> sourceFilter,
+        out GpsMatchInfo? matchInfo)
+    {
+        matchInfo = null;
+
+        GpsCandidate? bestCandidate = null;
+        int bestDelta = int.MaxValue;
+
+        foreach (var candidate in candidates)
+        {
+            if (!sourceFilter(candidate.Source))
+                continue;
+
+            var delta = Math.Abs(candidate.TimeMs - authorMs);
+            if (delta > thresholdMs)
+                continue;
+
+            if (bestCandidate is null ||
+                delta < bestDelta ||
+                (delta == bestDelta && GetGpsSourcePriority(candidate.Source) < GetGpsSourcePriority(bestCandidate.Source)))
+            {
+                bestCandidate = candidate;
+                bestDelta = delta;
+            }
+        }
+
+        if (bestCandidate is null)
+            return false;
+
+        matchInfo = new GpsMatchInfo(
+            bestCandidate.TimeMs,
+            bestDelta,
+            bestCandidate.Source,
+            GetThresholdMatchMethod(bestCandidate.Source),
+            GpsMatchKind.ThresholdMatch);
+        return true;
+    }
+
+    private static int GetGpsSourcePriority(string source)
+    {
+        if (source.EndsWith(".U03", StringComparison.Ordinal))
+            return 0;
+
+        if (source.EndsWith(".U03MinusCountdown", StringComparison.Ordinal))
+            return 1;
+
+        if (source.Contains(".Samples2[", StringComparison.Ordinal))
+            return 2;
+
+        if (source.Contains(".Samples[", StringComparison.Ordinal))
+            return 3;
+
+        if (source.EndsWith(".RaceTime", StringComparison.Ordinal))
+            return 4;
+
+        return 5;
+    }
+
+    private static GpsMatchMethod GetThresholdMatchMethod(string source)
+    {
+        if (source.EndsWith(".U03", StringComparison.Ordinal))
+            return GpsMatchMethod.U03Threshold;
+
+        if (source.EndsWith(".U03MinusCountdown", StringComparison.Ordinal))
+            return GpsMatchMethod.U03MinusCountdownThreshold;
+
+        return GpsMatchMethod.U03Threshold;
+    }
+
+    private static DataDump BuildDataDump(CGameCtnChallenge map, int? effectiveAuthorTimeMs, int? maxDepth)
+    {
+        var cp = map.ChallengeParameters;
+        var validationGhostMs = TimeToMs(cp?.RaceValidateGhost?.RaceTime);
+
+        var metadataKeys = map.ScriptMetadata?.Traits?.Keys
+            .OrderBy(k => k, StringComparer.Ordinal)
+            .ToList();
+
+        var waypointTimes = ExtractWaypointTimes(map.ScriptMetadata);
+
+        ValidationTagDump? validationTag = null;
+        if (TryGetValidationRemovalTagInfo(map.ScriptMetadata, out var tagInfo))
+        {
+            validationTag = new ValidationTagDump
+            {
+                Key = tagInfo.Key,
+                Note = tagInfo.Note,
+                AuthorTimeMs = tagInfo.AuthorTimeMs,
+                AuthorTimeSource = tagInfo.AuthorTimeSource,
+                SignaturePresent = tagInfo.HasSignature
+            };
+        }
+
+        var gpsRecordDataEntries = CollectGpsRecordDataEntries(map);
+        var gpsRecordDataCandidates = EnumerateGpsCandidatesFromEntries(gpsRecordDataEntries).ToList();
+        var mediaBlockEntityChunkCandidates = EnumerateMediaBlockEntityChunkCandidates(map).ToList();
+        var clipGroupEntLists = CollectClipGroupEntListSummaries(map, maxDepth);
+        var entRecordElemCandidates = EnumerateEntRecordElemCandidates(map, maxDepth).ToList();
+
+        var mediaBlockGhostCandidates = CollectMediaBlockGhostCandidates(map, maxDepth);
+
+        return new DataDump
+        {
+            NbCheckpoints = map.NbCheckpoints,
+            MapAuthorTimeMs = TimeToMs(map.AuthorTime),
+            ChallengeParametersAuthorTimeMs = TimeToMs(cp?.AuthorTime),
+            EffectiveAuthorTimeMs = effectiveAuthorTimeMs,
+            ValidationGhostRaceTimeMs = validationGhostMs,
+            ScriptMetadataKeys = metadataKeys is { Count: > 0 } ? metadataKeys : null,
+            WaypointTimesMs = waypointTimes is { Count: > 0 } ? waypointTimes : null,
+            ValidationTag = validationTag,
+            GpsRecordDataEntries = gpsRecordDataEntries.Count > 0 ? gpsRecordDataEntries : null,
+            GpsRecordDataCandidates = gpsRecordDataCandidates.Count > 0 ? gpsRecordDataCandidates : null,
+            MediaBlockEntityChunkCandidates = mediaBlockEntityChunkCandidates.Count > 0 ? mediaBlockEntityChunkCandidates : null,
+            ClipGroupEntLists = clipGroupEntLists.Count > 0 ? clipGroupEntLists : null,
+            EntRecordElemCandidates = entRecordElemCandidates.Count > 0 ? entRecordElemCandidates : null,
+            MediaBlockGhostCandidates = mediaBlockGhostCandidates.Count > 0 ? mediaBlockGhostCandidates : null
+        };
+    }
+
+    private static List<GpsRecordDataEntryDump> CollectGpsRecordDataEntries(CGameCtnChallenge map)
+    {
+        var list = new List<GpsRecordDataEntryDump>();
+
+        var clipGroup = map.ClipGroupInGame;
+        if (clipGroup?.Clips is null || clipGroup.Clips.Count == 0)
+            return list;
+
+        for (int triggerIndex = 0; triggerIndex < clipGroup.Clips.Count; triggerIndex++)
+        {
+            var trigger = clipGroup.Clips[triggerIndex];
+            var clip = trigger.Clip;
+            if (clip?.Tracks is null || clip.Tracks.Count == 0)
+                continue;
+
+            for (int trackIndex = 0; trackIndex < clip.Tracks.Count; trackIndex++)
+            {
+                var track = clip.Tracks[trackIndex];
+                if (track?.Blocks is null || track.Blocks.Count == 0)
+                    continue;
+
+                for (int blockIndex = 0; blockIndex < track.Blocks.Count; blockIndex++)
+                {
+                    var block = track.Blocks[blockIndex];
+                    if (block is null)
+                        continue;
+
+                    if (!TryGetMemberValue(block, "RecordData", out var recordDataObj) || recordDataObj is null)
+                        continue;
+
+                    if (!TryGetMemberValue(recordDataObj, "EntList", out var entListObj) ||
+                        entListObj is null ||
+                        entListObj is string ||
+                        entListObj is not IEnumerable entList)
+                        continue;
+
+                    int? entListCount = TryGetCollectionCount(entListObj, out var countValue) ? countValue : null;
+
+                    foreach (var entItem in EnumerateCollectionItems(entListObj))
+                    {
+                        int entIndex = entItem.Index;
+                        var ent = entItem.Value;
+
+                        if (ent is null)
+                        {
+                            var nullBasePath =
+                                $"ClipGroupInGame.Clips[{triggerIndex}].Clip.Tracks[{trackIndex}].Blocks[{blockIndex}].RecordData.EntList[{entIndex}]";
+                            list.Add(new GpsRecordDataEntryDump(
+                                nullBasePath,
+                                entListCount,
+                                true,
+                                null,
+                                null,
+                                null,
+                                0,
+                                null,
+                                null,
+                                0,
+                                null,
+                                null));
+                            continue;
+                        }
+
+                        var basePath =
+                            $"ClipGroupInGame.Clips[{triggerIndex}].Clip.Tracks[{trackIndex}].Blocks[{blockIndex}].RecordData.EntList[{entIndex}]";
+
+                        var u01 = TryGetIntPropertyValue(ent, "U01");
+                        var u02 = TryGetIntPropertyValue(ent, "U02");
+                        var u03 = TryGetIntPropertyValue(ent, "U03");
+
+                        var samples = GetSampleCollectionSummary(ent, "Samples");
+                        var samples2 = GetSampleCollectionSummary(ent, "Samples2");
+
+                        list.Add(new GpsRecordDataEntryDump(
+                            basePath,
+                            entListCount,
+                            false,
+                            u01,
+                            u02,
+                            u03,
+                            samples.Count,
+                            samples.LastIndexWithTime,
+                            samples.LastTimeMs,
+                            samples2.Count,
+                            samples2.LastIndexWithTime,
+                            samples2.LastTimeMs));
+                    }
+                }
+            }
+        }
+
+        return list;
+    }
+
+    private static List<GpsCandidate> CollectMediaBlockGhostCandidates(CGameCtnChallenge map, int? maxDepth)
+    {
+        var list = new List<GpsCandidate>();
+        if (map.ClipGroupInGame is null)
+            return list;
+
+        int index = 0;
+        foreach (var block in TraverseForType<CGameCtnMediaBlockGhost>(map.ClipGroupInGame, maxDepth))
+        {
+            var ghost = block.GhostModel;
+            if (ghost is null)
+            {
+                index++;
+                continue;
+            }
+
+            var t = TimeToMs(ghost.RaceTime);
+            if (t.HasValue)
+            {
+                list.Add(new GpsCandidate(
+                    t.Value,
+                    $"CGameCtnMediaBlockGhost[{index}].GhostModel.RaceTime"));
+            }
+
+            index++;
+        }
+
+        return list;
+    }
+
+    private static IEnumerable<GpsCandidate> EnumerateMediaBlockEntityChunkCandidates(CGameCtnChallenge map)
     {
         var clipGroup = map.ClipGroupInGame;
         if (clipGroup?.Clips is null || clipGroup.Clips.Count == 0)
@@ -520,46 +774,579 @@ internal sealed class Program
                 for (int blockIndex = 0; blockIndex < track.Blocks.Count; blockIndex++)
                 {
                     var block = track.Blocks[blockIndex];
-                    if (block is not CGameCtnMediaBlockEntity entityBlock)
+                    if (block is null)
                         continue;
 
-                    var recordData = entityBlock.RecordData;
-                    if (recordData?.EntList is null || recordData.EntList.Count == 0)
-                        continue;
-
-                    for (int entIndex = 0; entIndex < recordData.EntList.Count; entIndex++)
+                    if (!TryGetMemberValue(block, "GhostName", out var ghostNameObj) ||
+                        ghostNameObj is not string)
                     {
-                        var ent = recordData.EntList[entIndex];
-                        var basePath =
-                            $"ClipGroupInGame.Clips[{triggerIndex}].Clip.Tracks[{trackIndex}].Blocks[{blockIndex}].RecordData.EntList[{entIndex}]";
+                        continue;
+                    }
 
-                        var u03 = ent.U03;
-                        if (u03 > 0)
-                            yield return new GpsCandidate(u03, $"{basePath}.U03");
+                    if (!TryGetMemberValue(block, "Chunks", out var chunksObj) || chunksObj is null)
+                        continue;
 
-                        var samples2 = ent.Samples2;
-                        if (samples2 is null || samples2.Count == 0)
+                    foreach (var chunkItem in EnumerateCollectionItems(chunksObj))
+                    {
+                        var chunk = chunkItem.Value;
+                        if (chunk is null)
                             continue;
 
-                        var lastIndex = samples2.Count - 1;
-                        var lastTime = TimeToMs(samples2[lastIndex].Time);
-                        if (lastTime.HasValue)
-                        {
-                            yield return new GpsCandidate(
-                                lastTime.Value,
-                                $"{basePath}.Samples2[{lastIndex}].Time");
-                        }
+                        var typeName = chunk.GetType().Name;
+                        var u05 = TryGetIntPropertyValue(chunk, "U05");
+                        if (!u05.HasValue)
+                            continue;
+
+                        yield return new GpsCandidate(
+                            u05.Value,
+                            $"ClipGroupInGame.Clips[{triggerIndex}].Clip.Tracks[{trackIndex}].Blocks[{blockIndex}].Chunks[{chunkItem.Index}].{typeName}.U05");
                     }
                 }
             }
         }
     }
 
+    private static List<EntListSummary> CollectClipGroupEntListSummaries(CGameCtnChallenge map, int? maxDepth)
+    {
+        var list = new List<EntListSummary>();
+        var root = map.ClipGroupInGame;
+        if (root is null)
+            return list;
+
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var stack = new Stack<(object Obj, string Path, int Depth)>();
+        stack.Push((root, "ClipGroupInGame", 0));
+
+        while (stack.Count > 0)
+        {
+            var (obj, path, depth) = stack.Pop();
+            if (obj is null || obj is string)
+                continue;
+
+            if (!visited.Add(obj))
+                continue;
+
+            if (TryGetMemberValue(obj, "EntList", out var entListObj) &&
+                entListObj is not null &&
+                entListObj is not string &&
+                entListObj is IEnumerable)
+            {
+                int? entListCount = TryGetCollectionCount(entListObj, out var c) ? c : null;
+                var sampledU03 = new List<int?>();
+                foreach (var item in EnumerateCollectionItems(entListObj))
+                {
+                    sampledU03.Add(item.Value is null ? null : TryGetIntPropertyValue(item.Value, "U03"));
+                    if (sampledU03.Count >= 32)
+                        break;
+                }
+
+                list.Add(new EntListSummary($"{path}.EntList", entListCount, sampledU03));
+            }
+
+            if (maxDepth.HasValue && depth >= maxDepth.Value)
+                continue;
+
+            foreach (var child in EnumerateObjectChildrenWithPaths(obj, path))
+                stack.Push((child.Obj, child.Path, depth + 1));
+        }
+
+        return list
+            .OrderBy(x => x.Path, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static IEnumerable<GpsCandidate> EnumerateEntRecordElemCandidates(CGameCtnChallenge map, int? maxDepth)
+    {
+        foreach (var elem in EnumerateEntRecordElems(map, maxDepth))
+        {
+            if (elem.U03.HasValue && elem.U03.Value > 0)
+                yield return new GpsCandidate(elem.U03.Value, $"{elem.Path}.U03");
+
+            if (elem.U03MinusCountdownMs.HasValue)
+                yield return new GpsCandidate(elem.U03MinusCountdownMs.Value, $"{elem.Path}.U03MinusCountdown");
+        }
+    }
+
+    private static IEnumerable<EntRecordElemDump> EnumerateEntRecordElems(CGameCtnChallenge map, int? maxDepth)
+    {
+        var root = map.ClipGroupInGame;
+        if (root is null)
+            yield break;
+
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var stack = new Stack<(object Obj, string Path, int Depth)>();
+        stack.Push((root, "ClipGroupInGame", 0));
+
+        while (stack.Count > 0)
+        {
+            var (obj, path, depth) = stack.Pop();
+            if (obj is null || obj is string)
+                continue;
+
+            if (!visited.Add(obj))
+                continue;
+
+            var typeName = obj.GetType().Name;
+            if (typeName.EndsWith("EntRecordListElem", StringComparison.Ordinal))
+            {
+                var u03 = TryGetIntPropertyValue(obj, "U03");
+                int? u03MinusCountdown = null;
+                if (u03.HasValue && u03.Value >= GpsCountdownOffsetMs)
+                    u03MinusCountdown = u03.Value - GpsCountdownOffsetMs;
+
+                yield return new EntRecordElemDump(path, u03, u03MinusCountdown);
+            }
+
+            if (maxDepth.HasValue && depth >= maxDepth.Value)
+                continue;
+
+            foreach (var child in EnumerateObjectChildrenWithPaths(obj, path))
+                stack.Push((child.Obj, child.Path, depth + 1));
+        }
+    }
+
+    private static IEnumerable<GpsCandidate> EnumerateGpsRecordDataCandidates(CGameCtnChallenge map)
+    {
+        foreach (var candidate in EnumerateGpsCandidatesFromEntries(CollectGpsRecordDataEntries(map)))
+            yield return candidate;
+    }
+
+    private static IEnumerable<GpsCandidate> EnumerateGpsCandidatesFromEntries(IEnumerable<GpsRecordDataEntryDump> entries)
+    {
+        foreach (var entry in entries)
+        {
+            if (entry.U03.HasValue && entry.U03.Value > 0)
+                yield return new GpsCandidate(entry.U03.Value, $"{entry.Path}.U03");
+
+            if (entry.U03.HasValue && entry.U03.Value >= GpsCountdownOffsetMs)
+            {
+                yield return new GpsCandidate(
+                    entry.U03.Value - GpsCountdownOffsetMs,
+                    $"{entry.Path}.U03MinusCountdown");
+            }
+
+            if (entry.LastSampleTimeMs.HasValue && entry.LastSampleIndex.HasValue)
+            {
+                yield return new GpsCandidate(
+                    entry.LastSampleTimeMs.Value,
+                    $"{entry.Path}.Samples[{entry.LastSampleIndex.Value}].Time");
+            }
+
+            if (entry.LastSample2TimeMs.HasValue && entry.LastSample2Index.HasValue)
+            {
+                yield return new GpsCandidate(
+                    entry.LastSample2TimeMs.Value,
+                    $"{entry.Path}.Samples2[{entry.LastSample2Index.Value}].Time");
+            }
+        }
+    }
+
+    private static string BuildGpsValidationNote(int gpsThresholdMs, bool strictGps, GpsMatchInfo gpsMatch)
+    {
+        var methodNote = gpsMatch.Method switch
+        {
+            GpsMatchMethod.U05Exact => "GPS validated via exact U05 match (delta 0 ms).",
+            GpsMatchMethod.U03Threshold => $"GPS validated via U03 within \u00b1{gpsThresholdMs} ms (delta {gpsMatch.DeltaMs} ms; not exact).",
+            GpsMatchMethod.U03MinusCountdownThreshold => $"GPS validated via U03-3000 countdown normalization within \u00b1{gpsThresholdMs} ms (delta {gpsMatch.DeltaMs} ms; not exact).",
+            _ => $"GPS validation used fallback value within \u00b1{gpsThresholdMs} ms."
+        };
+
+        return strictGps
+            ? JoinNonEmpty(methodNote, "Strict mode => validated Yes.", "See gpsValidation for exact values.")
+            : JoinNonEmpty(methodNote, "Still potentially invalid.", "See gpsValidation for exact values.");
+    }
+
+    private static GpsValidationDetails BuildGpsValidationDetails(int authorMs, int gpsThresholdMs, GpsMatchInfo gpsMatch)
+    {
+        var isExact = gpsMatch.Kind == GpsMatchKind.ExactMatch;
+
+        return new GpsValidationDetails
+        {
+            MatchType = isExact ? "exact_match" : "within_threshold",
+            Method = gpsMatch.Method switch
+            {
+                GpsMatchMethod.U05Exact => "u05_exact",
+                GpsMatchMethod.U03Threshold => "u03_threshold",
+                GpsMatchMethod.U03MinusCountdownThreshold => "u03_minus_countdown_threshold",
+                _ => "u03_threshold"
+            },
+            AuthorTimeMs = authorMs,
+            MatchedTimeMs = gpsMatch.GpsTimeMs,
+            DeltaMs = gpsMatch.DeltaMs,
+            ThresholdMs = isExact ? null : gpsThresholdMs,
+            Source = gpsMatch.Source
+        };
+    }
+
     private static string JoinNonEmpty(params string?[] parts) => string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
+
+    private enum GpsMatchKind
+    {
+        ExactMatch,
+        ThresholdMatch
+    }
+
+    private enum GpsMatchMethod
+    {
+        U05Exact,
+        U03Threshold,
+        U03MinusCountdownThreshold
+    }
 
     private sealed record GpsCandidate(int TimeMs, string Source);
 
-    private sealed record GpsMatchInfo(int GpsTimeMs, int DeltaMs, string Source);
+    private sealed record GpsMatchInfo(
+        int GpsTimeMs,
+        int DeltaMs,
+        string Source,
+        GpsMatchMethod Method,
+        GpsMatchKind Kind);
+
+    private sealed class GpsValidationDetails
+    {
+        public string? MatchType { get; set; }
+        public string? Method { get; set; }
+        public int AuthorTimeMs { get; set; }
+        public int MatchedTimeMs { get; set; }
+        public int DeltaMs { get; set; }
+        public int? ThresholdMs { get; set; }
+        public string? Source { get; set; }
+    }
+
+    private sealed class DataDump
+    {
+        public int NbCheckpoints { get; set; }
+        public int? MapAuthorTimeMs { get; set; }
+        public int? ChallengeParametersAuthorTimeMs { get; set; }
+        public int? EffectiveAuthorTimeMs { get; set; }
+        public int? ValidationGhostRaceTimeMs { get; set; }
+        public List<string>? ScriptMetadataKeys { get; set; }
+        public List<int>? WaypointTimesMs { get; set; }
+        public ValidationTagDump? ValidationTag { get; set; }
+        public List<GpsRecordDataEntryDump>? GpsRecordDataEntries { get; set; }
+        public List<GpsCandidate>? GpsRecordDataCandidates { get; set; }
+        public List<GpsCandidate>? MediaBlockEntityChunkCandidates { get; set; }
+        public List<EntListSummary>? ClipGroupEntLists { get; set; }
+        public List<GpsCandidate>? EntRecordElemCandidates { get; set; }
+        public List<GpsCandidate>? MediaBlockGhostCandidates { get; set; }
+    }
+
+    private sealed class ValidationTagDump
+    {
+        public string? Key { get; set; }
+        public string? Note { get; set; }
+        public int? AuthorTimeMs { get; set; }
+        public string? AuthorTimeSource { get; set; }
+        public bool SignaturePresent { get; set; }
+    }
+
+    private sealed record GpsRecordDataEntryDump(
+        string Path,
+        int? EntListCount,
+        bool IsNull,
+        int? U01,
+        int? U02,
+        int? U03,
+        int SamplesCount,
+        int? LastSampleIndex,
+        int? LastSampleTimeMs,
+        int Samples2Count,
+        int? LastSample2Index,
+        int? LastSample2TimeMs);
+
+    private sealed record EntListSummary(
+        string Path,
+        int? Count,
+        List<int?>? SampledU03);
+
+    private sealed record EntRecordElemDump(
+        string Path,
+        int? U03,
+        int? U03MinusCountdownMs);
+
+    private readonly record struct SampleCollectionSummary(
+        int Count,
+        int? LastIndexWithTime,
+        int? LastTimeMs);
+
+    private readonly record struct IndexedItem(
+        int Index,
+        object? Value);
+
+    private readonly record struct ObjectPathChild(
+        object Obj,
+        string Path);
+
+    private static SampleCollectionSummary GetSampleCollectionSummary(object obj, string collectionPropertyName)
+    {
+        if (!TryGetMemberValue(obj, collectionPropertyName, out var rawCollection) ||
+            rawCollection is null ||
+            rawCollection is string ||
+            rawCollection is not IEnumerable enumerable)
+        {
+            return default;
+        }
+
+        int count = 0;
+        int? lastIndexWithTime = null;
+        int? lastTimeMs = null;
+
+        foreach (var sample in enumerable)
+        {
+            var index = count;
+            count++;
+
+            var sampleMs = ExtractSampleTimeMs(sample);
+            if (sampleMs.HasValue)
+            {
+                lastIndexWithTime = index;
+                lastTimeMs = sampleMs.Value;
+            }
+
+            if (count > 20000)
+                break;
+        }
+
+        return new SampleCollectionSummary(count, lastIndexWithTime, lastTimeMs);
+    }
+
+    private static int? ExtractSampleTimeMs(object? sample)
+    {
+        if (sample is null)
+            return null;
+
+        if (TryGetMemberValue(sample, "Time", out var rawTime) && rawTime is not null)
+        {
+            var msFromTime = TimeToMs(rawTime);
+            if (msFromTime.HasValue)
+                return msFromTime.Value;
+        }
+
+        var msDirect = TimeToMs(sample);
+        if (msDirect.HasValue)
+            return msDirect.Value;
+
+        if (TryGetMemberValue(sample, "RaceTime", out var rawRaceTime) && rawRaceTime is not null)
+        {
+            var msFromRaceTime = TimeToMs(rawRaceTime);
+            if (msFromRaceTime.HasValue)
+                return msFromRaceTime.Value;
+        }
+
+        return null;
+    }
+
+    private static int? TryGetIntPropertyValue(object obj, string propertyName)
+    {
+        if (!TryGetMemberValue(obj, propertyName, out var raw) || raw is null)
+            return null;
+
+        if (raw is int i)
+            return i;
+        if (raw is long l)
+            return unchecked((int)l);
+        if (raw is uint ui)
+            return unchecked((int)ui);
+
+        if (int.TryParse(raw.ToString(), out var parsed))
+            return parsed;
+
+        return null;
+    }
+
+    private static bool TryGetCollectionCount(object obj, out int count)
+    {
+        count = 0;
+
+        if (obj is ICollection collection)
+        {
+            count = collection.Count;
+            return true;
+        }
+
+        if (!TryGetPropertyValue(obj, "Count", out var raw) || raw is null)
+            return false;
+
+        if (raw is int i)
+        {
+            count = i;
+            return true;
+        }
+
+        if (raw is long l && l >= 0 && l <= int.MaxValue)
+        {
+            count = (int)l;
+            return true;
+        }
+
+        if (raw is uint ui && ui <= int.MaxValue)
+        {
+            count = (int)ui;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<IndexedItem> EnumerateCollectionItems(object collectionObj)
+    {
+        if (TryGetCollectionCount(collectionObj, out var count))
+        {
+            var itemProperty = collectionObj.GetType().GetProperty(
+                "Item",
+                BindingFlags.Instance | BindingFlags.Public,
+                binder: null,
+                returnType: null,
+                types: new[] { typeof(int) },
+                modifiers: null);
+
+            if (itemProperty is not null && itemProperty.CanRead)
+            {
+                var limit = Math.Min(count, 20000);
+                for (int i = 0; i < limit; i++)
+                {
+                    object? value = null;
+                    try { value = itemProperty.GetValue(collectionObj, new object[] { i }); } catch { }
+                    yield return new IndexedItem(i, value);
+                }
+                yield break;
+            }
+        }
+
+        if (collectionObj is IEnumerable enumerable)
+        {
+            int index = 0;
+            foreach (var item in enumerable)
+            {
+                yield return new IndexedItem(index, item);
+                index++;
+                if (index >= 20000)
+                    break;
+            }
+        }
+    }
+
+    private static IEnumerable<ObjectPathChild> EnumerateObjectChildrenWithPaths(object obj, string path)
+    {
+        if (obj is IEnumerable enumerable && obj is not string)
+        {
+            int i = 0;
+            foreach (var item in enumerable)
+            {
+                if (item is not null)
+                    yield return new ObjectPathChild(item, $"{path}[{i}]");
+
+                i++;
+                if (i >= 20000)
+                    yield break;
+            }
+            yield break;
+        }
+
+        var type = obj.GetType();
+
+        foreach (var p in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (!p.CanRead) continue;
+            if (p.GetIndexParameters().Length != 0) continue;
+
+            var pt = p.PropertyType;
+            if (pt == typeof(string)) continue;
+            if (pt.IsPrimitive || pt.IsEnum) continue;
+            if (pt.IsValueType) continue;
+
+            object? value = null;
+            try { value = p.GetValue(obj); } catch { }
+            if (value is null) continue;
+
+            if (value is IEnumerable childEnumerable && value is not string)
+            {
+                int i = 0;
+                foreach (var item in childEnumerable)
+                {
+                    if (item is not null)
+                        yield return new ObjectPathChild(item, $"{path}.{p.Name}[{i}]");
+
+                    i++;
+                    if (i >= 20000)
+                        break;
+                }
+            }
+            else
+            {
+                yield return new ObjectPathChild(value, $"{path}.{p.Name}");
+            }
+        }
+
+        foreach (var f in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            var ft = f.FieldType;
+            if (ft == typeof(string)) continue;
+            if (ft.IsPrimitive || ft.IsEnum) continue;
+            if (ft.IsValueType) continue;
+
+            object? value = null;
+            try { value = f.GetValue(obj); } catch { }
+            if (value is null) continue;
+
+            if (value is IEnumerable childEnumerable && value is not string)
+            {
+                int i = 0;
+                foreach (var item in childEnumerable)
+                {
+                    if (item is not null)
+                        yield return new ObjectPathChild(item, $"{path}.{f.Name}[{i}]");
+
+                    i++;
+                    if (i >= 20000)
+                        break;
+                }
+            }
+            else
+            {
+                yield return new ObjectPathChild(value, $"{path}.{f.Name}");
+            }
+        }
+    }
+
+    private static bool TryGetMemberValue(object obj, string memberName, out object? value)
+    {
+        if (TryGetPropertyValue(obj, memberName, out value))
+            return true;
+
+        value = null;
+        try
+        {
+            var field = obj.GetType().GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field is null)
+                return false;
+
+            value = field.GetValue(obj);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetPropertyValue(object obj, string propertyName, out object? value)
+    {
+        value = null;
+        try
+        {
+            var prop = obj.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+            if (prop is null || !prop.CanRead || prop.GetIndexParameters().Length != 0)
+                return false;
+
+            value = prop.GetValue(obj);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static IEnumerable<T> TraverseForType<T>(object root, int? maxDepth) where T : class
     {
@@ -641,7 +1428,8 @@ internal sealed class Program
         string? Key,
         string? Note,
         int? AuthorTimeMs,
-        string? AuthorTimeSource);
+        string? AuthorTimeSource,
+        bool HasSignature);
 
     private static bool TryGetValidationRemovalTagInfo(
         CScriptTraitsMetadata? metadata,
@@ -659,12 +1447,9 @@ internal sealed class Program
             if (kvp.Value is not CScriptTraitsMetadata.ScriptStructTrait structTrait)
                 continue;
 
-            if (!TryGetStructFieldText(structTrait, "compressed", out var compressed) ||
-                string.IsNullOrWhiteSpace(compressed))
-                continue;
-
-            if (!MatchesValidationRemovalSignature(compressed))
-                continue;
+            var hasCompressed = TryGetStructFieldText(structTrait, "compressed", out var compressed) &&
+                !string.IsNullOrWhiteSpace(compressed);
+            var hasSignature = hasCompressed && MatchesValidationRemovalSignature(compressed!);
 
             var note = TryGetStructFieldText(structTrait, "Note", out var noteText) ? noteText : null;
             int? authorMs = null;
@@ -686,7 +1471,19 @@ internal sealed class Program
                 source = $"Note.AuthorTime ({noteToken})";
             }
 
-            tagInfo = new ValidationRemovalTagInfo(kvp.Key, note, authorMs, source);
+            var noteLooksLikeRemoval = !string.IsNullOrWhiteSpace(note) &&
+                (note!.IndexOf("AuthorTime=", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 note.IndexOf("RaceValidationReplay", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 note.IndexOf("ValidationReplay Remover", StringComparison.OrdinalIgnoreCase) >= 0);
+            var looksLikeRemovalStruct = hasCompressed || noteLooksLikeRemoval;
+
+            if (!hasSignature && !looksLikeRemovalStruct)
+                continue;
+
+            if (!hasSignature && !authorMs.HasValue)
+                continue;
+
+            tagInfo = new ValidationRemovalTagInfo(kvp.Key, note, authorMs, source, hasSignature);
             return true;
         }
 
@@ -698,7 +1495,7 @@ internal sealed class Program
 
             if (TraitContainsValidationRemovalTag(kvp.Value))
             {
-                tagInfo = new ValidationRemovalTagInfo(kvp.Key, null, null, null);
+                tagInfo = new ValidationRemovalTagInfo(kvp.Key, null, null, null, true);
                 return true;
             }
         }
@@ -710,7 +1507,8 @@ internal sealed class Program
     {
         var keyPart = string.IsNullOrWhiteSpace(info.Key) ? null : $"tagKey={info.Key}";
         var sourcePart = string.IsNullOrWhiteSpace(info.AuthorTimeSource) ? null : $"tagAuthorTimeSource={info.AuthorTimeSource}";
-        return JoinNonEmpty(baseNote, keyPart, sourcePart);
+        var signaturePart = info.HasSignature ? "removalSignature=present" : "removalSignature=missing";
+        return JoinNonEmpty(baseNote, keyPart, sourcePart, signaturePart);
     }
 
     private static bool TryGetStructField(
@@ -1191,6 +1989,7 @@ internal sealed class Program
         bool gpsEnabled = true;
         bool strictGps = false;
         int gpsThresholdMs = DefaultGpsThresholdMs;
+        bool dataDump = false;
 
         int? maxDepth = null;
 
@@ -1269,6 +2068,10 @@ internal sealed class Program
                     gpsThresholdMs = gpsThreshold;
                     break;
 
+                case "--data-dump":
+                    dataDump = true;
+                    break;
+
                 case "--max-depth":
                     if (!int.TryParse(Next(), out var d) || d < 0)
                         throw new ArgException("--max-depth must be a non-negative integer");
@@ -1322,6 +2125,7 @@ internal sealed class Program
             gpsEnabled,
             strictGps,
             gpsThresholdMs,
+            dataDump,
             maxDepth
         );
     }
@@ -1347,6 +2151,7 @@ Flags:
   --strict-gps               If GPS ghost matches author time => validated ""Yes"" (default: ""Maybe"")
   --no-gps                   Disable GPS scan
   --gps-threshold-ms <ms>    GPS author time tolerance in milliseconds (default: 100)
+  --data-dump                Include raw parsed internals in output (U03, Samples2, metadata keys, etc.)
   --max-depth <n>            Limit reflection traversal depth for GPS scan (default: unlimited)
 
 Notes:
@@ -1377,6 +2182,7 @@ Notes:
         bool GpsEnabled,
         bool StrictGps,
         int GpsThresholdMs,
+        bool DataDump,
         int? MaxDepth
     );
 
@@ -1390,10 +2196,12 @@ Notes:
         public string? Validated { get; set; }
         public string? Type { get; set; }
         public string? Note { get; set; }
+        public GpsValidationDetails? GpsValidation { get; set; }
         public string? Path { get; set; }
         public string? MapName { get; set; }
         public string? ReplayPath { get; set; }
         public string? Error { get; set; }
+        public DataDump? DataDump { get; set; }
     }
 
     private sealed class ArgException : Exception

@@ -1,4 +1,4 @@
-# Map Validation Checker
+﻿# Map Validation Checker
 
 A CLI tool that inspects Trackmania GBX map files (`.Map.Gbx`) and reports whether the Author Time looks "normally validated", "set by plugin", "validated via validation ghost", "supported by GPS", "supported by replay", or "manually overridden".
 
@@ -32,17 +32,19 @@ See: [Manual overrides](#manual-overrides)
 
 If the map has a `RaceValidateGhost`:
 
-* If `RaceValidateGhost.RaceTime == AuthorTime` → `validated: "Yes"`, `type: "validationghost"`
-* If it exists but **does not match** → `error: "validation ghost time mismatch"`
+* If `RaceValidateGhost.RaceTime == AuthorTime` â†’ `validated: "Yes"`, `type: "validationghost"`
+* If it exists but **does not match** â†’ `error: "validation ghost time mismatch"`
 
 ### 3) Validation removal tag (script metadata)
 
 If a validation-removal tag is found in script metadata (added by the strip-validation tool):
 
-* `validated: "Yes"`, `type: "validationtag"`
-* If the tag includes an AuthorTime (from `ChallengeParameters` or the Note text) and it **does not** match the map’s `AuthorTime` → `error: "validation tag author time mismatch"` (marked `validated: "Unknown"`)
+* If tag AuthorTime (from `ChallengeParameters` or the Note text) matches map `AuthorTime` -> `validated: "Yes"`, `type: "validationtag"`
+* If the tag looks valid but the expected remover signature is missing, the map still validates, but `note` is marked suspicious
+* If tag AuthorTime is present but does not match map `AuthorTime` -> `validated: "Maybe"` with a mismatch warning note
+* If no tag AuthorTime can be extracted -> `validated: "Maybe"` with a warning note
 
-### 4) Replay ↔ map matching (strong external evidence)
+### 4) Replay map matching (strong external evidence)
 
 If replays are provided (`--replays`) and:
 
@@ -56,25 +58,31 @@ Then:
 
 See: [Replay matching](#replay-matching)
 
-### 5) GPS ghost check (optional)
+### 5) Script metadata validation (normal vs plugin suspicion)
+
+Reads `Race_AuthorRaceWaypointTimes` from script metadata:
+
+* If metadata finish time equals `AuthorTime` -> `validated: "Yes"`, `type: "normal"`
+* If metadata is missing/unreadable -> later stages may still validate (for example GPS); otherwise final fallback is `validated: "Unknown"`, `type: "normal"`
+* If metadata finish differs from `AuthorTime` and no stronger evidence is found -> `validated: "Maybe"`, `type: "plugin"`
+
+### 6) GPS ghost check (optional)
 
 If GPS scan is enabled (default):
 
-* If GPS record data contains a time within a tolerance of map `AuthorTime`:
+* If GPS-related media data contains a time that matches map `AuthorTime`:
+
+  * First, ghost block chunk value `U05` (exact match only), scanned across all `Blocks[*].Chunks[*]` where `GhostName` is a string
+  * If no exact `U05` match exists, fallback to `RecordData.EntList[*].U03` within threshold
+  * If needed, fallback to `RecordData.EntList[*].U03 - 3000` (countdown normalization) within threshold
 
   * `type: "gps"`
   * `validated: "Maybe"` by default
   * `validated: "Yes"` if `--strict-gps` is enabled
+  * `gpsValidation` object describes which value/path was used (`exact_match` vs `within_threshold`)
 
-By default, GPS matching allows ±100 ms because GPS times are stored to the nearest tenth of a second. You can disable GPS scanning with `--no-gps` or change the tolerance with `--gps-threshold-ms`.
-
-### 6) Script metadata validation (normal vs plugin suspicion)
-
-Reads `Race_AuthorRaceWaypointTimes` from script metadata:
-
-* If metadata finish time == `AuthorTime` **and** waypoint count matches checkpoint count → `validated: "Yes"`, `type: "normal"`
-* Otherwise → `validated: "Maybe"`, `type: "plugin"`
-* If metadata missing/unreadable → `validated: "Unknown"`, `type: "normal"`
+By default, GPS matching allows +/-100 ms because GPS times are stored to the nearest tenth of a second. You can disable GPS scanning with `--no-gps` or change the tolerance with `--gps-threshold-ms`.
+For `RecordData.EntList[*].U03` candidates, the checker also evaluates a normalized value with a 3000 ms start-countdown offset removed (`U03 - 3000`) to match race-time semantics.
 
 ---
 
@@ -109,10 +117,15 @@ Outputs a **JSON array**, one element per scanned file:
 | `validated`  | `"Yes" \| "Maybe" \| "Unknown"` | Status label                                                     |
 | `type`       | string                          | `normal`, `plugin`, `validationghost`, `validationtag`, `gps`, `replay`, `manual` |
 | `note`       | string?                         | Optional note (manual / debug info)                              |
+| `gpsValidation` | object?                      | When `type: "gps"`, structured GPS evidence (method, match type, author/matched values, delta, threshold, source path) |
 | `path`       | string?                         | Included if `--include-path`                                     |
 | `mapName`    | string?                         | Map name (omit with `--no-map-name`)                             |
 | `replayPath` | string?                         | Included if `--include-path` **and** replay matched              |
 | `error`      | string?                         | Error message for that item                                      |
+| `dataDump`   | object?                         | Included if `--data-dump`; raw parsed internals (U03, Samples2, metadata, etc.) |
+| `dataDump.mediaBlockEntityChunkCandidates` | object[]? | In `--data-dump`, ghost-block chunk-derived candidates (any chunk type exposing `U05`) |
+| `dataDump.clipGroupEntLists` | object[]?       | In `--data-dump`, lists discovered `ClipGroupInGame` EntList paths/counts for index-level verification |
+| `dataDump.entRecordElemCandidates` | object[]? | In `--data-dump`, type-based fallback candidates found from all `EntRecordListElem` objects in `ClipGroupInGame` |
 
 ---
 
@@ -170,7 +183,10 @@ GPS options:
   Disable GPS scanning entirely.
 
 * `--gps-threshold-ms <ms>`
-  GPS author time tolerance in milliseconds (default: 100). This exists because GPS times are stored to the nearest tenth of a second.
+  GPS author time tolerance in milliseconds (default: 100). This applies to non-`U05` GPS fallbacks; chunk `U05` uses exact matching.
+
+* `--data-dump`
+  Include a raw `dataDump` object in each result so you can inspect parsed internals (for example `RecordData.EntList[*].U03`, ghost chunk `U05` candidates, and metadata keys).
 
 Traversal safety:
 
@@ -217,7 +233,7 @@ Replay matching requires:
 
 * Replay contains (or can derive) a map UID
 * Replay contains one or more ghosts
-* If **any** ghost race time (ms) equals the map’s `AuthorTime` (ms), the map gets:
+* If **any** ghost race time (ms) equals the mapâ€™s `AuthorTime` (ms), the map gets:
 
   * `validated: "Yes"`
   * `type: "replay"`
@@ -320,4 +336,5 @@ bin/Release/net*/win-x64/publish/MapValidationChecker.exe
 * This tool **cannot guarantee** legitimacy of an Author Time.
 * A time can "look correct" while still being copied from a different map version.
 * GPS ghosts can exist for reasons unrelated to validation (cutfixes, guides, etc.).
-* Replays provide stronger evidence, but still don’t guarantee the replay was made on the exact same map version.
+* Replays provide stronger evidence, but still donâ€™t guarantee the replay was made on the exact same map version.
+

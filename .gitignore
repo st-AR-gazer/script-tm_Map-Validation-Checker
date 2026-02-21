@@ -5,3 +5,9 @@ obj
 .vs
 
 results-*
+
+.tmp*/
+
+*.Map.Gbx
+
+runs/
