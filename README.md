@@ -1,4 +1,12 @@
-﻿# Map Validation Checker
+I've made a frontend for the tool, you can find it here:
+
+https://tools.xjk.yt/Map-Validation-Checker/
+
+Very useful if you don't wanna build from source and/or don't want to run some randos (me xD) exe
+
+---
+ 
+# Map Validation Checker
 
 A CLI tool that inspects Trackmania GBX map files (`.Map.Gbx`) and reports whether the Author Time looks "normally validated", "set by plugin", "validated via validation ghost", "supported by GPS", "supported by replay", or "manually overridden".
 
