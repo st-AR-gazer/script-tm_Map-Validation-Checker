@@ -257,14 +257,16 @@ internal sealed class Program
 
             if (finishMatchesAuthor)
             {
-                report.Validated = "Yes";
-                report.Type = "normal";
-
                 if (cpCountLooksWeird)
                 {
+                    report.Validated = "Maybe";
+                    report.Type = "plugin";
                     report.Note = $"Finish time matches, but checkpoint count differs (mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+                    return report;
                 }
 
+                report.Validated = "Yes";
+                report.Type = "normal";
                 return report;
             }
         }

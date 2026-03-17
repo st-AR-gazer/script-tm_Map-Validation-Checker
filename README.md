@@ -70,7 +70,8 @@ See: [Replay matching](#replay-matching)
 
 Reads `Race_AuthorRaceWaypointTimes` from script metadata:
 
-* If metadata finish time equals `AuthorTime` -> `validated: "Yes"`, `type: "normal"`
+* If metadata finish time equals `AuthorTime` and waypoint count matches the map checkpoint count expectation -> `validated: "Yes"`, `type: "normal"`
+* If metadata finish time equals `AuthorTime` but waypoint count does not match the map checkpoint count expectation -> `validated: "Maybe"`, `type: "plugin"`
 * If metadata is missing/unreadable -> later stages may still validate (for example GPS); otherwise final fallback is `validated: "Unknown"`, `type: "normal"`
 * If metadata finish differs from `AuthorTime` and no stronger evidence is found -> `validated: "Maybe"`, `type: "plugin"`
 
