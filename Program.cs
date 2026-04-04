@@ -252,7 +252,8 @@ internal sealed class Program
         if (wpTimes is not null && wpTimes.Count > 0)
         {
             var metadataFinish = wpTimes[wpTimes.Count - 1];
-            var cpCountLooksWeird = !(map.NbCheckpoints == wpTimes.Count || (map.NbCheckpoints + 1) == wpTimes.Count);
+            var expectedCpCount = map.NbCheckpoints * map.NbLaps;
+            var cpCountLooksWeird = !(expectedCpCount == wpTimes.Count || (expectedCpCount + 1) == wpTimes.Count);
             var finishMatchesAuthor = metadataFinish == authorMs.Value;
 
             if (finishMatchesAuthor)
@@ -261,7 +262,7 @@ internal sealed class Program
                 {
                     report.Validated = "Maybe";
                     report.Type = "plugin";
-                    report.Note = $"Finish time matches, but checkpoint count differs (mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+                    report.Note = $"Finish time matches, but checkpoint count differs (mapExpectedCpCount={expectedCpCount}, metadataWaypoints={wpTimes.Count}).";
                     return report;
                 }
 
@@ -298,7 +299,7 @@ internal sealed class Program
         var metadataFinishFinal = wpTimes[wpTimes.Count - 1];
         report.Validated = "Maybe";
         report.Type = "plugin";
-        report.Note = $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinishFinal}, mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+        report.Note = $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinishFinal}, mapNbCheckpoints={map.NbCheckpoints}, mapNbLaps={map.NbLaps}, metadataWaypoints={wpTimes.Count}).";
         return report;
 
     }
