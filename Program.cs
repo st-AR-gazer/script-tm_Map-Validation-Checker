@@ -252,7 +252,8 @@ internal sealed class Program
         if (wpTimes is not null && wpTimes.Count > 0)
         {
             var metadataFinish = wpTimes[wpTimes.Count - 1];
-            var cpCountLooksWeird = !(map.NbCheckpoints == wpTimes.Count || (map.NbCheckpoints + 1) == wpTimes.Count);
+            var expectedWaypointCount = GetExpectedWaypointCount(map);
+            var cpCountLooksWeird = !(expectedWaypointCount == wpTimes.Count || (expectedWaypointCount + 1) == wpTimes.Count);
             var finishMatchesAuthor = metadataFinish == authorMs.Value;
 
             if (finishMatchesAuthor)
@@ -261,7 +262,8 @@ internal sealed class Program
                 {
                     report.Validated = "Maybe";
                     report.Type = "plugin";
-                    report.Note = $"Finish time matches, but checkpoint count differs (mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+                    report.Note =
+                        $"Finish time matches, but waypoint count differs (mapNbCheckpoints={map.NbCheckpoints}, mapIsLapRace={map.IsLapRace}, mapNbLaps={map.NbLaps}, mapExpectedWaypoints={expectedWaypointCount}, metadataWaypoints={wpTimes.Count}).";
                     return report;
                 }
 
@@ -296,9 +298,11 @@ internal sealed class Program
         }
 
         var metadataFinishFinal = wpTimes[wpTimes.Count - 1];
+        var expectedWaypointCountFinal = GetExpectedWaypointCount(map);
         report.Validated = "Maybe";
         report.Type = "plugin";
-        report.Note = $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinishFinal}, mapNbCheckpoints={map.NbCheckpoints}, metadataWaypoints={wpTimes.Count}).";
+        report.Note =
+            $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinishFinal}, mapNbCheckpoints={map.NbCheckpoints}, mapIsLapRace={map.IsLapRace}, mapNbLaps={map.NbLaps}, mapExpectedWaypoints={expectedWaypointCountFinal}, metadataWaypoints={wpTimes.Count}).";
         return report;
 
     }
@@ -583,6 +587,7 @@ internal sealed class Program
     {
         var cp = map.ChallengeParameters;
         var validationGhostMs = TimeToMs(cp?.RaceValidateGhost?.RaceTime);
+        var expectedWaypointCount = GetExpectedWaypointCount(map);
 
         var metadataKeys = map.ScriptMetadata?.Traits?.Keys
             .OrderBy(k => k, StringComparer.Ordinal)
@@ -614,6 +619,9 @@ internal sealed class Program
         return new DataDump
         {
             NbCheckpoints = map.NbCheckpoints,
+            IsLapRace = map.IsLapRace,
+            NbLaps = map.NbLaps,
+            ExpectedWaypointCount = expectedWaypointCount,
             MapAuthorTimeMs = TimeToMs(map.AuthorTime),
             ChallengeParametersAuthorTimeMs = TimeToMs(cp?.AuthorTime),
             EffectiveAuthorTimeMs = effectiveAuthorTimeMs,
@@ -1018,6 +1026,9 @@ internal sealed class Program
     private sealed class DataDump
     {
         public int NbCheckpoints { get; set; }
+        public bool IsLapRace { get; set; }
+        public int NbLaps { get; set; }
+        public int ExpectedWaypointCount { get; set; }
         public int? MapAuthorTimeMs { get; set; }
         public int? ChallengeParametersAuthorTimeMs { get; set; }
         public int? EffectiveAuthorTimeMs { get; set; }
@@ -1816,6 +1827,12 @@ internal sealed class Program
         }
 
         return null;
+    }
+
+    private static int GetExpectedWaypointCount(CGameCtnChallenge map)
+    {
+        var lapMultiplier = map.IsLapRace ? map.NbLaps : 1;
+        return map.NbCheckpoints * lapMultiplier;
     }
 
     // ----------------------------
