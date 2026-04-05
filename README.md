@@ -70,6 +70,7 @@ See: [Replay matching](#replay-matching)
 
 Reads `Race_AuthorRaceWaypointTimes` from script metadata:
 
+* Expected waypoint count is `NbCheckpoints * NbLaps` when `IsLapRace` is `true`; otherwise it is `NbCheckpoints`
 * If metadata finish time equals `AuthorTime` and waypoint count matches the map checkpoint count expectation -> `validated: "Yes"`, `type: "normal"`
 * If metadata finish time equals `AuthorTime` but waypoint count does not match the map checkpoint count expectation -> `validated: "Maybe"`, `type: "plugin"`
 * If metadata is missing/unreadable -> later stages may still validate (for example GPS); otherwise final fallback is `validated: "Unknown"`, `type: "normal"`
@@ -131,7 +132,7 @@ Outputs a **JSON array**, one element per scanned file:
 | `mapName`    | string?                         | Map name (omit with `--no-map-name`)                             |
 | `replayPath` | string?                         | Included if `--include-path` **and** replay matched              |
 | `error`      | string?                         | Error message for that item                                      |
-| `dataDump`   | object?                         | Included if `--data-dump`; raw parsed internals (U03, Samples2, metadata, etc.) |
+| `dataDump`   | object?                         | Included if `--data-dump`; raw parsed internals (including `isLapRace`, `nbLaps`, `expectedWaypointCount`, U03, Samples2, metadata, etc.) |
 | `dataDump.mediaBlockEntityChunkCandidates` | object[]? | In `--data-dump`, ghost-block chunk-derived candidates (any chunk type exposing `U05`) |
 | `dataDump.clipGroupEntLists` | object[]?       | In `--data-dump`, lists discovered `ClipGroupInGame` EntList paths/counts for index-level verification |
 | `dataDump.entRecordElemCandidates` | object[]? | In `--data-dump`, type-based fallback candidates found from all `EntRecordListElem` objects in `ClipGroupInGame` |
