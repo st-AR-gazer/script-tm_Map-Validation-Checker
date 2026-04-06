@@ -1831,7 +1831,9 @@ internal sealed class Program
 
     private static int GetExpectedWaypointCount(CGameCtnChallenge map)
     {
-        var lapMultiplier = map.IsLapRace ? map.NbLaps : 1;
+        // Some maps are flagged as lap races but serialize NbLaps as 0.
+        // Treat that as a single-lap race instead of expecting zero waypoints.
+        var lapMultiplier = map.IsLapRace ? Math.Max(map.NbLaps, 1) : 1;
         return map.NbCheckpoints * lapMultiplier;
     }
 
