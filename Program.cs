@@ -12,6 +12,7 @@ using System.Text.Json;
 
 using GBX.NET;
 using GBX.NET.Engines.Game;
+using GBX.NET.Engines.GameData;
 using GBX.NET.Engines.Script;
 using GBX.NET.LZO;
 using GBX.NET.ZLib;
@@ -19,6 +20,7 @@ using GBX.NET.ZLib;
 internal sealed class Program
 {
     private const string WaypointTimesKey = "Race_AuthorRaceWaypointTimes";
+    private const string LinkedCheckpointTag = "LinkedCheckpoint";
     private const int DefaultGpsThresholdMs = 100;
     private const int GpsCountdownOffsetMs = 3000;
     private const string ValidationRemovalSignatureText = "RaceValidationReplay Remover made by ar";
@@ -253,7 +255,8 @@ internal sealed class Program
         {
             var metadataFinish = wpTimes[wpTimes.Count - 1];
             var expectedWaypointCount = GetExpectedWaypointCount(map);
-            var cpCountLooksWeird = !(expectedWaypointCount == wpTimes.Count || (expectedWaypointCount + 1) == wpTimes.Count);
+            var invalidLinkedCheckpointGroupCount = CountInvalidLinkedCheckpointGroups(map);
+            var cpCountLooksWeird = !WaypointCountLooksPlausible(map, expectedWaypointCount, wpTimes.Count, invalidLinkedCheckpointGroupCount);
             var finishMatchesAuthor = metadataFinish == authorMs.Value;
 
             if (finishMatchesAuthor)
@@ -263,7 +266,7 @@ internal sealed class Program
                     report.Validated = "Maybe";
                     report.Type = "plugin";
                     report.Note =
-                        $"Finish time matches, but waypoint count differs (mapNbCheckpoints={map.NbCheckpoints}, mapIsLapRace={map.IsLapRace}, mapNbLaps={map.NbLaps}, mapExpectedWaypoints={expectedWaypointCount}, metadataWaypoints={wpTimes.Count}).";
+                        $"Finish time matches, but waypoint count differs (mapNbCheckpoints={map.NbCheckpoints}, mapIsLapRace={map.IsLapRace}, mapNbLaps={map.NbLaps}, mapExpectedWaypoints={expectedWaypointCount}, metadataWaypoints={wpTimes.Count}, invalidLinkedCheckpointGroups={invalidLinkedCheckpointGroupCount}).";
                     return report;
                 }
 
@@ -613,6 +616,7 @@ internal sealed class Program
         var mediaBlockEntityChunkCandidates = EnumerateMediaBlockEntityChunkCandidates(map).ToList();
         var clipGroupEntLists = CollectClipGroupEntListSummaries(map, maxDepth);
         var entRecordElemCandidates = EnumerateEntRecordElemCandidates(map, maxDepth).ToList();
+        var invalidLinkedCheckpointOrders = GetInvalidLinkedCheckpointOrders(map);
 
         var mediaBlockGhostCandidates = CollectMediaBlockGhostCandidates(map, maxDepth);
 
@@ -628,6 +632,7 @@ internal sealed class Program
             ValidationGhostRaceTimeMs = validationGhostMs,
             ScriptMetadataKeys = metadataKeys is { Count: > 0 } ? metadataKeys : null,
             WaypointTimesMs = waypointTimes is { Count: > 0 } ? waypointTimes : null,
+            InvalidLinkedCheckpointOrders = invalidLinkedCheckpointOrders.Count > 0 ? invalidLinkedCheckpointOrders : null,
             ValidationTag = validationTag,
             GpsRecordDataEntries = gpsRecordDataEntries.Count > 0 ? gpsRecordDataEntries : null,
             GpsRecordDataCandidates = gpsRecordDataCandidates.Count > 0 ? gpsRecordDataCandidates : null,
@@ -1035,6 +1040,7 @@ internal sealed class Program
         public int? ValidationGhostRaceTimeMs { get; set; }
         public List<string>? ScriptMetadataKeys { get; set; }
         public List<int>? WaypointTimesMs { get; set; }
+        public List<int>? InvalidLinkedCheckpointOrders { get; set; }
         public ValidationTagDump? ValidationTag { get; set; }
         public List<GpsRecordDataEntryDump>? GpsRecordDataEntries { get; set; }
         public List<GpsCandidate>? GpsRecordDataCandidates { get; set; }
@@ -1833,8 +1839,68 @@ internal sealed class Program
     {
         // Some maps are flagged as lap races but serialize NbLaps as 0.
         // Treat that as a single-lap race instead of expecting zero waypoints.
-        var lapMultiplier = map.IsLapRace ? Math.Max(map.NbLaps, 1) : 1;
-        return map.NbCheckpoints * lapMultiplier;
+        return map.NbCheckpoints * GetWaypointLapMultiplier(map);
+    }
+
+    private static int GetWaypointLapMultiplier(CGameCtnChallenge map)
+    {
+        return map.IsLapRace ? Math.Max(map.NbLaps, 1) : 1;
+    }
+
+    private static bool WaypointCountLooksPlausible(
+        CGameCtnChallenge map,
+        int expectedWaypointCount,
+        int metadataWaypointCount,
+        int invalidLinkedCheckpointGroupCount)
+    {
+        if (metadataWaypointCount == expectedWaypointCount)
+            return true;
+
+        if (invalidLinkedCheckpointGroupCount <= 0)
+            return false;
+
+        // A broken linked-checkpoint group (Order = -1 / uint_max) can make one waypoint 
+        // per lap optional, we can therefore tolerate that exact shortfall and nothing else.
+        var adjustedExpectedWaypointCount =
+            expectedWaypointCount - (invalidLinkedCheckpointGroupCount * GetWaypointLapMultiplier(map));
+
+        return metadataWaypointCount == adjustedExpectedWaypointCount;
+    }
+
+    private static int CountInvalidLinkedCheckpointGroups(CGameCtnChallenge map)
+    {
+        return GetInvalidLinkedCheckpointOrders(map).Count;
+    }
+
+    private static List<int> GetInvalidLinkedCheckpointOrders(CGameCtnChallenge map)
+    {
+        return EnumerateWaypointSpecialProperties(map)
+            .Where(IsInvalidLinkedCheckpoint)
+            .Select(wp => wp.Order)
+            .Distinct()
+            .OrderBy(order => order)
+            .ToList();
+    }
+
+    private static IEnumerable<CGameWaypointSpecialProperty> EnumerateWaypointSpecialProperties(CGameCtnChallenge map)
+    {
+        foreach (var block in map.GetBlocks())
+        {
+            if (block.WaypointSpecialProperty is not null)
+                yield return block.WaypointSpecialProperty;
+        }
+
+        foreach (var item in map.GetAnchoredObjects())
+        {
+            if (item.WaypointSpecialProperty is not null)
+                yield return item.WaypointSpecialProperty;
+        }
+    }
+
+    private static bool IsInvalidLinkedCheckpoint(CGameWaypointSpecialProperty waypoint)
+    {
+        return string.Equals(waypoint.Tag, LinkedCheckpointTag, StringComparison.OrdinalIgnoreCase)
+            && waypoint.Order == -1;
     }
 
     // ----------------------------

@@ -71,8 +71,9 @@ See: [Replay matching](#replay-matching)
 Reads `Race_AuthorRaceWaypointTimes` from script metadata:
 
 * Expected waypoint count is `NbCheckpoints * max(NbLaps, 1)` when `IsLapRace` is `true`; otherwise it is `NbCheckpoints`
-* If metadata finish time equals `AuthorTime` and waypoint count matches the map checkpoint count expectation -> `validated: "Yes"`, `type: "normal"`
-* If metadata finish time equals `AuthorTime` but waypoint count does not match the map checkpoint count expectation -> `validated: "Maybe"`, `type: "plugin"`
+* If metadata finish time equals `AuthorTime` and waypoint count exactly matches the map checkpoint count expectation -> `validated: "Yes"`, `type: "normal"`
+* If the map contains an invalid linked-checkpoint group (`LinkedCheckpoint` with order `-1` / `4294967295`), a one-waypoint shortfall per lap is also accepted
+* If metadata finish time equals `AuthorTime` but waypoint count still does not match an allowed expectation -> `validated: "Maybe"`, `type: "plugin"`
 * If metadata is missing/unreadable -> later stages may still validate (for example GPS); otherwise final fallback is `validated: "Unknown"`, `type: "normal"`
 * If metadata finish differs from `AuthorTime` and no stronger evidence is found -> `validated: "Maybe"`, `type: "plugin"`
 
