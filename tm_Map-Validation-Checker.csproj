@@ -19,4 +19,9 @@
     <PackageReference Include="GBX.NET.ZLib" Version="1.1.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The SDK project lives at the repository root, so exclude nested test sources. -->
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
+
 </Project>

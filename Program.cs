@@ -1423,7 +1423,7 @@ internal sealed class Program
 
             object? value = null;
             try { value = p.GetValue(obj); }
-            catch {  }
+            catch { }
 
             if (value is not null)
                 yield return value;
