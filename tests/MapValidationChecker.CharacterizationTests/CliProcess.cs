@@ -4,7 +4,7 @@ namespace MapValidationChecker.CharacterizationTests;
 
 internal static class CliProcess
 {
-    private const string ApplicationAssemblyName = "tm_Map-Validation-Checker.dll";
+    private const string ApplicationAssemblyName = "MapValidationChecker.dll";
 
     public static async Task<CliRunResult> RunAsync(params string[] arguments)
     {

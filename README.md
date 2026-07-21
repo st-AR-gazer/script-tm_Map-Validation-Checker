@@ -320,24 +320,24 @@ MapValidationChecker --single "C:\Maps\MyMap.Map.Gbx" --gps-threshold-ms 150
 ### Build
 
 ```bash
-dotnet build -c Release
+dotnet build .\tm_Map-Validation-Checker.sln -c Release
 ```
 
 ### Publish single-file EXE (self-contained)
 
 ```bash
-dotnet publish -c Release -r win-x64 --self-contained true `
+dotnet publish .\src\MapValidationChecker.Cli\MapValidationChecker.Cli.csproj `
+  -c Release -r win-x64 --self-contained true `
   -p:PublishSingleFile=true `
   -p:IncludeNativeLibrariesForSelfExtract=true `
   -p:PublishTrimmed=false `
-  -p:EnableCompressionInSingleFile=true `
-  -p:AssemblyName=MapValidationChecker
+  -p:EnableCompressionInSingleFile=true
 ```
 
 Output EXE:
 
 ```
-bin/Release/net*/win-x64/publish/MapValidationChecker.exe
+src/MapValidationChecker.Cli/bin/Release/net10.0/win-x64/publish/MapValidationChecker.exe
 ```
 
 ---

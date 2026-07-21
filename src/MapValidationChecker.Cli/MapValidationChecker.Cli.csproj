@@ -1,9 +1,10 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>tm_Map_Validation_Checker</RootNamespace>
+    <RootNamespace>MapValidationChecker.Cli</RootNamespace>
+    <AssemblyName>MapValidationChecker</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Version>0.1.8</Version>
@@ -20,8 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The SDK project lives at the repository root, so exclude nested test sources. -->
-    <Compile Remove="tests\**\*.cs" />
+    <ProjectReference Include="..\MapValidationChecker.Core\MapValidationChecker.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -18,7 +18,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\tm_Map-Validation-Checker.csproj" />
+    <ProjectReference Include="..\..\src\MapValidationChecker.Cli\MapValidationChecker.Cli.csproj" />
+    <ProjectReference Include="..\..\src\MapValidationChecker.Core\MapValidationChecker.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -17,6 +17,11 @@ using GBX.NET.Engines.Script;
 using GBX.NET.LZO;
 using GBX.NET.ZLib;
 
+using MapValidationChecker.Cli.Serialization;
+using MapValidationChecker.Core.Validation;
+
+namespace MapValidationChecker.Cli;
+
 internal sealed class Program
 {
     private const string WaypointTimesKey = "Race_AuthorRaceWaypointTimes";
@@ -82,6 +87,7 @@ internal sealed class Program
                 WriteIndented = opts.Pretty,
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             };
+            ValidationJsonConverters.AddTo(jsonOptions);
 
             var json = JsonSerializer.Serialize(outputObj, jsonOptions);
 
@@ -157,16 +163,16 @@ internal sealed class Program
         if (!string.IsNullOrWhiteSpace(report.Uid) &&
             manual.TryGetValue(report.Uid!, out var manualEntry))
         {
-            report.Type = "manual";
-            report.Validated = manualEntry.Valid ? "Yes" : "Maybe";
+            report.Type = ValidationType.Manual;
+            report.Validated = manualEntry.Valid ? ValidationStatus.Yes : ValidationStatus.Maybe;
             report.Note = manualEntry.Note;
             return report;
         }
 
         if (!authorMs.HasValue)
         {
-            report.Validated = "Unknown";
-            report.Type = "normal";
+            report.Validated = ValidationStatus.Unknown;
+            report.Type = ValidationType.Normal;
             report.Error = "missing AuthorMedal time";
             report.Note = "Map is missing author time; validation checks skipped.";
             return report;
@@ -181,13 +187,13 @@ internal sealed class Program
             {
                 if (valMs.Value == authorMs.Value)
                 {
-                    report.Validated = "Yes";
-                    report.Type = "validationghost";
+                    report.Validated = ValidationStatus.Yes;
+                    report.Type = ValidationType.ValidationGhost;
                     return report;
                 }
 
-                report.Validated = "Unknown";
-                report.Type = "validationghost";
+                report.Validated = ValidationStatus.Unknown;
+                report.Type = ValidationType.ValidationGhost;
                 report.Error = "validation ghost time mismatch";
                 report.Note = $"authorTimeMs={authorMs.Value}, validationGhostMs={valMs.Value}";
                 return report;
@@ -197,7 +203,7 @@ internal sealed class Program
         // 3) Validation removal tag (script metadata)
         if (TryGetValidationRemovalTagInfo(map.ScriptMetadata, out var tagInfo))
         {
-            report.Type = "validationtag";
+            report.Type = ValidationType.ValidationTag;
             var signatureWarning = tagInfo.HasSignature
                 ? null
                 : "Warning: expected removal-tool signature is missing; metadata looks suspicious.";
@@ -206,7 +212,7 @@ internal sealed class Program
             {
                 if (authorMs.Value == tagInfo.AuthorTimeMs.Value)
                 {
-                    report.Validated = "Yes";
+                    report.Validated = ValidationStatus.Yes;
                     report.Note = BuildValidationTagNote(
                         tagInfo,
                         JoinNonEmpty(
@@ -215,7 +221,7 @@ internal sealed class Program
                     return report;
                 }
 
-                report.Validated = "Maybe";
+                report.Validated = ValidationStatus.Maybe;
                 report.Note = BuildValidationTagNote(
                     tagInfo,
                     JoinNonEmpty(
@@ -224,7 +230,7 @@ internal sealed class Program
                 return report;
             }
 
-            report.Validated = "Maybe";
+            report.Validated = ValidationStatus.Maybe;
             report.Note = BuildValidationTagNote(
                 tagInfo,
                 JoinNonEmpty(
@@ -240,8 +246,8 @@ internal sealed class Program
             var match = replayEntries.FirstOrDefault(r => r.GhostTimesMs.Contains(authorMs.Value));
             if (match is not null)
             {
-                report.Validated = "Yes";
-                report.Type = "replay";
+                report.Validated = ValidationStatus.Yes;
+                report.Type = ValidationType.Replay;
                 report.Note = "Replay ghost time matched map author time.";
                 if (opts.IncludePath)
                     report.ReplayPath = match.Path;
@@ -263,15 +269,15 @@ internal sealed class Program
             {
                 if (cpCountLooksWeird)
                 {
-                    report.Validated = "Maybe";
-                    report.Type = "plugin";
+                    report.Validated = ValidationStatus.Maybe;
+                    report.Type = ValidationType.Plugin;
                     report.Note =
                         $"Finish time matches, but waypoint count differs (mapNbCheckpoints={map.NbCheckpoints}, mapIsLapRace={map.IsLapRace}, mapNbLaps={map.NbLaps}, mapExpectedWaypoints={expectedWaypointCount}, metadataWaypoints={wpTimes.Count}, invalidLinkedCheckpointGroups={invalidLinkedCheckpointGroupCount}).";
                     return report;
                 }
 
-                report.Validated = "Yes";
-                report.Type = "normal";
+                report.Validated = ValidationStatus.Yes;
+                report.Type = ValidationType.Normal;
                 return report;
             }
         }
@@ -281,8 +287,8 @@ internal sealed class Program
         {
             if (HasGpsGhostAtAuthorTime(map, authorMs.Value, opts.MaxDepth, opts.GpsThresholdMs, out var gpsMatch))
             {
-                report.Type = "gps";
-                report.Validated = opts.StrictGps ? "Yes" : "Maybe";
+                report.Type = ValidationType.Gps;
+                report.Validated = opts.StrictGps ? ValidationStatus.Yes : ValidationStatus.Maybe;
                 if (gpsMatch is not null)
                 {
                     report.GpsValidation = BuildGpsValidationDetails(authorMs.Value, opts.GpsThresholdMs, gpsMatch);
@@ -294,16 +300,16 @@ internal sealed class Program
 
         if (wpTimes is null || wpTimes.Count == 0)
         {
-            report.Validated = "Unknown";
-            report.Type = "normal";
+            report.Validated = ValidationStatus.Unknown;
+            report.Type = ValidationType.Normal;
             report.Note = "Missing author time or Race_AuthorRaceWaypointTimes metadata.";
             return report;
         }
 
         var metadataFinishFinal = wpTimes[wpTimes.Count - 1];
         var expectedWaypointCountFinal = GetExpectedWaypointCount(map);
-        report.Validated = "Maybe";
-        report.Type = "plugin";
+        report.Validated = ValidationStatus.Maybe;
+        report.Type = ValidationType.Plugin;
         report.Note =
             $"AuthorTime differs from metadata finish (authorTimeMs={authorMs.Value}, metadataFinishMs={metadataFinishFinal}, mapNbCheckpoints={map.NbCheckpoints}, mapIsLapRace={map.IsLapRace}, mapNbLaps={map.NbLaps}, mapExpectedWaypoints={expectedWaypointCountFinal}, metadataWaypoints={wpTimes.Count}).";
         return report;
@@ -2280,8 +2286,8 @@ Notes:
     private sealed class Report
     {
         public string? Uid { get; set; }
-        public string? Validated { get; set; }
-        public string? Type { get; set; }
+        public ValidationStatus? Validated { get; set; }
+        public ValidationType? Type { get; set; }
         public string? Note { get; set; }
         public GpsValidationDetails? GpsValidation { get; set; }
         public string? Path { get; set; }
