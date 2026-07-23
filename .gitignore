@@ -7,6 +7,7 @@ artifacts/
 TestResults/
 *.user
 *.suo
+/MapValidationChecker.exe
 
 results-*
 
