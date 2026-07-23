@@ -1,0 +1,39 @@
+namespace MapValidationChecker.Cli.CommandLine;
+
+internal static class CliUsage
+{
+    public const string Text =
+        """
+        Usage:
+          MapValidationChecker --single <mapFile> [--replays <replayFileOrFolder>] [flags...]
+          MapValidationChecker --batch  <mapFolder> [--replays <replayFolder>] [flags...]
+
+        Flags:
+          --recursive                Recurse into subfolders (batch + replay scanning)
+          --pretty                   Pretty-print JSON
+          --include-path             Include "path" and "replayPath" (if matched)
+          --no-map-name              Omit "mapName" from JSON output
+          --progress                 Print periodic scan progress to stderr
+          --progress-interval <sec>  Progress update interval in seconds (default: 5)
+          --output <file>            Write JSON output to a file (also prints to stdout)
+          --manual <file>            Manual overrides JSON (object or array of objects):
+                                     { "valid": true/false, "uid": "...", "note": "..." }
+
+          --strict-gps               If GPS ghost matches author time => validated "Yes" (default: "Maybe")
+          --no-gps                   Disable GPS scan
+          --gps-threshold-ms <ms>    GPS author time tolerance in milliseconds (default: 100)
+          --data-dump                Include raw parsed internals in output (U03, Samples2, metadata keys, etc.)
+          --max-depth <n>            Limit diagnostic reflection traversal depth (default: unlimited)
+
+        Notes:
+          - Manual override has highest priority.
+          - GPS times are stored to the nearest tenth of a second, so small discrepancies are expected.
+          - If a validation ghost exists and its race time != author time, an error is returned.
+        """;
+
+    public static void WriteTo(TextWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteLine(Text);
+    }
+}

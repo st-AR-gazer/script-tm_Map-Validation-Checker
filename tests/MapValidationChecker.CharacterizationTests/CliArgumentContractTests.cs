@@ -13,13 +13,13 @@ public sealed class CliArgumentContractTests
     }
 
     [Fact]
-    public async Task Help_flag_currently_returns_the_same_argument_error_as_no_arguments()
+    public async Task Help_flag_prints_usage_successfully()
     {
         var result = await CliProcess.RunAsync("--help");
 
-        Assert.Equal(2, result.ExitCode);
+        Assert.Equal(0, result.ExitCode);
         Assert.Equal(ReadHelpSnapshot(), CliProcess.TrimFinalNewlines(result.StandardOutput));
-        Assert.Equal("No arguments provided.", CliProcess.TrimFinalNewlines(result.StandardError));
+        Assert.Equal(string.Empty, CliProcess.TrimFinalNewlines(result.StandardError));
     }
 
     [Fact]

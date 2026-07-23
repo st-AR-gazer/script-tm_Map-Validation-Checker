@@ -17,7 +17,7 @@ Flags:
   --no-gps                   Disable GPS scan
   --gps-threshold-ms <ms>    GPS author time tolerance in milliseconds (default: 100)
   --data-dump                Include raw parsed internals in output (U03, Samples2, metadata keys, etc.)
-  --max-depth <n>            Limit reflection traversal depth for GPS scan (default: unlimited)
+  --max-depth <n>            Limit diagnostic reflection traversal depth (default: unlimited)
 
 Notes:
   - Manual override has highest priority.

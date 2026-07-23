@@ -3,6 +3,10 @@ data-confirmations
 bin
 obj
 .vs
+artifacts/
+TestResults/
+*.user
+*.suo
 
 results-*
 
