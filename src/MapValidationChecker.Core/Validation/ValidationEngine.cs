@@ -49,8 +49,11 @@ public sealed class ValidationEngine
                 error: "validation ghost time mismatch");
         }
 
-        if (input.ValidationTag is not null)
-            return EvaluateValidationTag(input.ValidationTag, authorTimeMs);
+        if (input.ValidationTag is { } validationTag &&
+            validationTag.MatchesAuthorTime(authorTimeMs))
+        {
+            return EvaluateMatchingValidationTag(validationTag);
+        }
 
         if (input.MatchingReplay is not null)
         {
@@ -112,45 +115,19 @@ public sealed class ValidationEngine
                 $"AuthorTime differs from metadata finish (authorTimeMs={authorTimeMs}, metadataFinishMs={waypointMetadata.FinishTimeMs}, mapNbCheckpoints={input.Checkpoints.NbCheckpoints}, mapIsLapRace={input.Checkpoints.IsLapRace}, mapNbLaps={input.Checkpoints.NbLaps}, mapExpectedWaypoints={expectedWaypointCountFinal}, metadataWaypoints={waypointMetadata.WaypointCount}).");
     }
 
-    private static ValidationEvaluation EvaluateValidationTag(
-        ValidationTagEvidence tag,
-        int authorTimeMs)
+    private static ValidationEvaluation EvaluateMatchingValidationTag(ValidationTagEvidence tag)
     {
         var signatureWarning = tag.HasSignature
             ? null
             : "Warning: expected removal-tool signature is missing; metadata looks suspicious.";
 
-        if (tag.AuthorTimeMs.HasValue)
-        {
-            if (authorTimeMs == tag.AuthorTimeMs.Value)
-            {
-                return Complete(
-                    ValidationStatus.Yes,
-                    ValidationType.ValidationTag,
-                    note: BuildValidationTagNote(
-                        tag,
-                        JoinNonEmpty(
-                            "Validation ghost removed (tag found in script metadata).",
-                            signatureWarning)));
-            }
-
-            return Complete(
-                ValidationStatus.Maybe,
-                ValidationType.ValidationTag,
-                note: BuildValidationTagNote(
-                    tag,
-                    JoinNonEmpty(
-                        $"Warning: validation tag author time mismatch; authorTimeMs={authorTimeMs}, tagAuthorTimeMs={tag.AuthorTimeMs.Value}.",
-                        signatureWarning)));
-        }
-
         return Complete(
-            ValidationStatus.Maybe,
+            ValidationStatus.Yes,
             ValidationType.ValidationTag,
             note: BuildValidationTagNote(
                 tag,
                 JoinNonEmpty(
-                    "Validation-removal tag found, but no tag author time was extracted.",
+                    "Validation ghost removed (tag found in script metadata).",
                     signatureWarning)));
     }
 

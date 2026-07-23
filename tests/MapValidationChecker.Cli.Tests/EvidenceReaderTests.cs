@@ -1,4 +1,7 @@
 using GBX.NET.Engines.Game;
+using GBX.NET.Engines.Script;
+
+using TmEssentials;
 
 using MapValidationChecker.Cli.Evidence;
 using MapValidationChecker.Cli.Infrastructure;
@@ -68,6 +71,29 @@ public sealed class EvidenceReaderTests
         Assert.Null(evidence.MatchingReplay);
         Assert.Null(evidence.WaypointMetadata);
         Assert.Equal(new MapCheckpointFacts(0, false, 0, 0), evidence.Checkpoints);
+    }
+
+    [Fact]
+    public void Non_gps_reader_collects_waypoints_after_a_timeless_validation_tag()
+    {
+        var metadata = new CScriptTraitsMetadata();
+        metadata.Declare("RemovalTag", "RaceValidationReplay Remover made by ar");
+        metadata.Declare("Race_AuthorRaceWaypointTimes", [4_000, 10_000]);
+        var map = new CGameCtnChallenge
+        {
+            AuthorTime = new TimeInt32(10_000),
+            NbCheckpoints = 2,
+            ScriptMetadata = metadata
+        };
+
+        var evidence = NonGpsEvidenceReader.Read(
+            map,
+            ManualOverrideCatalog.Empty,
+            ReplayEvidenceIndex.Empty);
+
+        Assert.NotNull(evidence.ValidationTag);
+        Assert.Null(evidence.ValidationTag.AuthorTimeMs);
+        Assert.Equal(new WaypointMetadataEvidence(10_000, 2), evidence.WaypointMetadata);
     }
 
     [Fact]

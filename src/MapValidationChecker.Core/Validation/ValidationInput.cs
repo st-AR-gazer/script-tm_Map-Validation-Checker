@@ -24,7 +24,11 @@ public sealed record ValidationTagEvidence(
     string? Note,
     int? AuthorTimeMs,
     string? AuthorTimeSource,
-    bool HasSignature);
+    bool HasSignature)
+{
+    public bool MatchesAuthorTime(int authorTimeMs) =>
+        AuthorTimeMs.HasValue && AuthorTimeMs.Value == authorTimeMs;
+}
 
 public sealed record ReplayEvidence(string Path);
 

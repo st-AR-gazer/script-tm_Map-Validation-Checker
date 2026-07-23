@@ -74,7 +74,7 @@ public sealed class ValidationEngineTests
     }
 
     [Fact]
-    public void Mismatching_unsigned_validation_tag_is_maybe_with_both_warnings()
+    public void Mismatching_validation_tag_falls_through_to_matching_replay()
     {
         var outcome = EvaluateComplete(CreateInput() with
         {
@@ -83,28 +83,45 @@ public sealed class ValidationEngineTests
                 null,
                 9_000,
                 "Note.AuthorTime (0:09.000)",
-                HasSignature: false)
+                HasSignature: false),
+            MatchingReplay = new ReplayEvidence("C:/Replays/current-at.Replay.Gbx")
         });
 
-        Assert.Equal(ValidationStatus.Maybe, outcome.Status);
-        Assert.Equal(ValidationType.ValidationTag, outcome.Type);
-        Assert.Equal(
-            "Warning: validation tag author time mismatch; authorTimeMs=10000, tagAuthorTimeMs=9000. Warning: expected removal-tool signature is missing; metadata looks suspicious. tagKey=RemovalTag tagAuthorTimeSource=Note.AuthorTime (0:09.000) removalSignature=missing",
-            outcome.Note);
+        Assert.Equal(ValidationStatus.Yes, outcome.Status);
+        Assert.Equal(ValidationType.Replay, outcome.Type);
+        Assert.Equal("C:/Replays/current-at.Replay.Gbx", outcome.ReplayPath);
     }
 
     [Fact]
-    public void Validation_tag_without_a_time_is_maybe()
+    public void Validation_tag_without_a_time_falls_through_to_normal_metadata()
     {
         var outcome = EvaluateComplete(CreateInput() with
         {
-            ValidationTag = new ValidationTagEvidence(null, null, null, null, HasSignature: true)
+            ValidationTag = new ValidationTagEvidence(null, null, null, null, HasSignature: true),
+            WaypointMetadata = new WaypointMetadataEvidence(10_000, 3)
         });
 
-        Assert.Equal(ValidationStatus.Maybe, outcome.Status);
-        Assert.Equal(ValidationType.ValidationTag, outcome.Type);
+        Assert.Equal(ValidationStatus.Yes, outcome.Status);
+        Assert.Equal(ValidationType.Normal, outcome.Type);
+    }
+
+    [Fact]
+    public void Nonmatching_validation_tag_without_later_evidence_uses_normal_fallback()
+    {
+        var outcome = EvaluateComplete(CreateInput() with
+        {
+            ValidationTag = new ValidationTagEvidence(
+                "RemovalTag",
+                null,
+                9_000,
+                "ChallengeParameters.AuthorTime",
+                HasSignature: true)
+        });
+
+        Assert.Equal(ValidationStatus.Unknown, outcome.Status);
+        Assert.Equal(ValidationType.Normal, outcome.Type);
         Assert.Equal(
-            "Validation-removal tag found, but no tag author time was extracted. removalSignature=present",
+            "Missing author time or Race_AuthorRaceWaypointTimes metadata.",
             outcome.Note);
     }
 

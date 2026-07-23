@@ -34,7 +34,7 @@ internal static class NonGpsEvidenceReader
             {
                 validationTag = ValidationTagReader.Read(map.ScriptMetadata);
 
-                if (validationTag is null)
+                if (validationTag?.MatchesAuthorTime(authorTimeMs.Value) != true)
                 {
                     matchingReplay = replayIndex.FindMatch(map.MapUid, authorTimeMs.Value);
 
